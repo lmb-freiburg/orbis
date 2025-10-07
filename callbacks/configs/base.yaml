@@ -1,0 +1,39 @@
+callbacks:
+  - target: callbacks.setup.SetupCallback
+    params:
+      resume: false
+      now: ${now}
+      logdir: ${logdir}
+      ckptdir: ${ckptdir}
+      cfgdir: ${cfgdir}
+      config: ${config}
+      lightning_config: ${lightning_config}
+
+  - target: pytorch_lightning.callbacks.LearningRateMonitor
+    params:
+      logging_interval: step
+
+  - target: pytorch_lightning.callbacks.ModelCheckpoint
+    params:
+      dirpath: ${ckptdir}
+      filename: checkpoint-{epoch}-{step}
+      every_n_train_steps: ${log_ckpt_frequency}
+      save_last: true
+      enable_version_counter: false
+      save_on_train_epoch_end: true
+
+  - target: pytorch_lightning.callbacks.TQDMProgressBar
+    params:
+      refresh_rate: ${bar_refresh_rate}
+
+  - target: callbacks.logging.ImageLogger
+    params:
+      batch_frequency: ${log_img_frequency}
+      max_images: 8
+      clamp: true
+      increase_log_steps: ${increase_log_steps}
+
+  - target: callbacks.checkpointing.PeriodicCheckpoint
+    params:
+      every: ${periodic_checkpoint}
+      dirpath: ${ckptdir}

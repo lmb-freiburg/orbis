@@ -1,0 +1,67 @@
+# Configuration file for training a flow-matching second stage model with token factorization. Input resolution: 256x256.
+
+model:
+  base_learning_rate: 5.0e-05
+  adjust_learning_rate: false
+  find_unused_parameters: true
+  gradient_clip_algorithm: norm
+  precision: 16-mixed
+  grad_clip: 1.0
+  grad_acc_steps: 1
+  target: models.second_stage.fm_model.ModelIF
+  params:
+    warmup_steps: 5000
+    min_lr_multiplier: 0.1
+    enc_scale: 2.841
+    enc_scale_dino: 2.830
+    adjust_lr_to_batch_size: false
+    tokenizer_config:
+      folder: $TK_WORK_DIR/2025-05-20T16-27-30_vq_IF_dino2_e16_DLC11518833_dec
+      ckpt_path: checkpoints/last.ckpt
+    generator_config:
+      target: networks.DiT.dit.STDiT
+      params:
+        max_num_frames: 64
+        hidden_size: 768
+        depth: 24
+        num_heads: 16
+        mlp_ratio: 4
+        input_size:
+        - 16
+        - 16
+        patch_size: 1
+        in_channels: 16
+        dropout: 0.0
+        ctx_noise_aug_ratio: 0.1
+        ctx_noise_aug_prob: 0.5
+        drop_ctx_rate: 0.1
+data:
+  target: data.datamodule.DataModuleFromConfig
+  params:
+    batch_size: 4
+    num_workers: 4
+    train:
+      target: data.custom_multiframe.MultiHDF5DatasetMultiFrameRandomizeFrameRate
+      params:
+        hdf5_paths_file: /path/to/video/data/train.txt
+        size:
+        - 256
+        - 256
+        num_frames: 6
+        stored_data_frame_rate: 5
+        frame_rates_and_weights:
+        - - 5
+          - 1
+        aug: random_shift
+        scale_min: 0.15
+        scale_max: 0.5
+    validation:
+      target: data.custom_multiframe.MultiHDF5DatasetMultiFrameFromJSONFrameRateWrapper
+      params:
+        samples_json: /path/to/video/data/validation.json
+        size:
+        - 256
+        - 256
+        num_frames: 6
+        stored_data_frame_rate: 5
+        frame_rate: 5

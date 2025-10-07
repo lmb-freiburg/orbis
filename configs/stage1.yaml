@@ -1,0 +1,91 @@
+model:
+  base_learning_rate: 8.0e-07
+  adjust_learning_rate: true
+  static_graph: true
+  target: models.first_stage.vqgan.VQModel
+  params:
+    monitor: val/rec_loss
+    grad_acc_steps: 1
+    cont_ratio_trainig: 0.0
+    min_lr_multiplier: 0.1
+    only_decoder: false
+    scale_equivariance: null #[[2], [2]]  # or none
+    distill_model_type: VIT_DINOv2
+    encoder_config:
+      target: networks.tokenizer.pretrained_models.Encoder
+      params:
+        resolution: 
+        - 256
+        - 256
+        pretrained_encoder: MAE
+        patch_size: 16
+        z_channels: 768
+        normalize_embedding: true
+    decoder_config:
+      target: networks.tokenizer.ae.Decoder
+      params:
+        double_z: false
+        z_channels: 768
+        resolution: 256
+        in_channels: 3
+        out_ch: 3
+        ch: 128
+        ch_mult:
+        - 1
+        - 1
+        - 2
+        - 2
+        - 4
+        num_res_blocks: 2
+        attn_resolutions:
+        - 16
+        dropout: 0.0
+        normalize_embedding: false
+    quantizer_config:
+      target: modules.quantize.VectorQuantizer
+      params:
+        n_e: 16384
+        e_dim: 16
+        beta: 0.25
+        normalize_embedding: true
+    loss_config:
+      target: modules.vqloss.VQLPIPSWithDiscriminator
+      params:
+        disc_conditional: false
+        disc_in_channels: 3
+        disc_start: 10000
+        disc_weight: 0.1
+        adaptive_disc_weight: true
+        codebook_weight: 1.0
+        distill_loss_weight: 1.0
+        perceptual_weight: 1.0
+        l1_loss_weight: 1.0
+        l2_loss_weight: 0.0
+        se_weight: 0.25
+        warmup_steps: 5000
+        beta_1: 0.5
+        beta_2: 0.9
+    entropy_loss_weight_scheduler_config:
+      target: modules.lr_scheduler.VQEntropyLossScheduler
+      params:
+        decay_steps: 10000
+        weight_max: 0.01
+        weight_min: 0.001
+data:
+  target: data.datamodule.DataModuleFromConfig
+  params:
+    batch_size: 64
+    num_workers: 8
+    train:
+      target: data.custom.MultiHDF5Dataset
+      params:
+        hdf5_paths_file: /path/to/tokenizer/data/train.txt
+        size: 256
+        aug: random_resize_center
+        scale_min: 0.25
+        scale_max: 0.75
+    validation:
+      target: data.custom.MultiHDF5Dataset
+      params:
+        hdf5_paths_file: /path/to/tokenizer/data/val.txt
+        size: 256

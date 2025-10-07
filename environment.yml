@@ -1,0 +1,40 @@
+name: orbis_env
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+  - defaults
+
+dependencies:
+  # --- Core ---
+  - python=3.10
+  - pytorch>=2.5
+  - torchvision
+  - torchaudio
+  - pytorch-cuda=12.1
+  - ffmpeg
+  - pip
+
+  # --- Pip packages (no torch/torchvision here to avoid conflicts) ---
+  - pip:
+      - timm>=1.0
+      - diffusers>=0.33
+      - accelerate>=1.0
+      - einops>=0.7
+      - transformers>=4.40
+      - datasets>=2.18
+      - hydra-core>=1.3
+      - omegaconf>=2.3
+      - decord>=0.6
+      - opencv-python>=4.10
+      - pandas>=2.2
+      - scikit-learn>=1.4
+      - scipy>=1.12
+      - tqdm>=4.66
+      - submitit>=1.5
+      - safetensors>=0.4
+      - torchmetrics>=1.3
+      - webdataset>=0.2.57
+      - pytorch-fid>=0.3.0
+      - seaborn>=0.13
+      - imageio>=2.34
