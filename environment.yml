@@ -13,6 +13,7 @@ dependencies:
   - torchaudio
   - pytorch-cuda=12.1
   - ffmpeg
+  - h5py
   - pip
 
   # --- Pip packages (no torch/torchvision here to avoid conflicts) ---
@@ -38,3 +39,6 @@ dependencies:
       - pytorch-fid>=0.3.0
       - seaborn>=0.13
       - imageio>=2.34
+      - pytorch-lightning>=2.4
+      - tensorboard>=2.17
+      - albumentations>=2.0
