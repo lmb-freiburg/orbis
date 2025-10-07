@@ -12,11 +12,16 @@
 
 ## Installation
 ```bash
-conda create -n orbis python=3.10
-conda activate orbis
+# 1. Clone the repo
 git clone https://github.com/lmb-freiburg/orbis.git
 cd orbis
-pip install -r requirements.txt
+
+# 2. Create the environment directly from the YAML file
+conda env create -f environment.yml
+
+# 3. Activate it
+conda activate orbis_env
+
 ```
 
 ## Checkpoints 

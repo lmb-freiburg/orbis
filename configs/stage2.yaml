@@ -1,4 +1,4 @@
-# Configuration file for training a flow-matching second stage model with the simplest tokenizer. Input resolution: 256x256.
+# Configuration file for training a flow-matching second stage model with the simplest tokenizer.
 
 model:
   base_learning_rate: 5.0e-05
@@ -15,7 +15,7 @@ model:
     enc_scale: 4
     adjust_lr_to_batch_size: false
     tokenizer_config:
-      folder: $TK_WORK_DIR/$TK_WORK_DIR/PATHTOTOKENIZER
+      folder: $TK_WORK_DIR/PATHTOTOKENIZER
       ckpt_path: checkpoints/last.ckpt
     generator_config:
       target: networks.DiT.dit.STDiT
