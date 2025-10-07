@@ -12,14 +12,9 @@
 
 ## Installation
 ```bash
-# 1. Clone the repo
 git clone https://github.com/lmb-freiburg/orbis.git
 cd orbis
-
-# 2. Create the environment directly from the YAML file
 conda env create -f environment.yml
-
-# 3. Activate it
 conda activate orbis_env
 
 ```
