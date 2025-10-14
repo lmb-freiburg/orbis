@@ -17,16 +17,17 @@ model:
       folder: $TK_WORK_DIR/2025-04-08T15-23-09_custom_f16_16384_dim16_L5_sepEnc_dinox2_0_vq_only_wo_adv_lmbgpu20_SE2_mixed_adv_dec_only
       ckpt_path: checkpoints/epoch-3.ckpt
     generator_config:
-      target: networks.DiT.dit.SwinSTDiT
+      target: networks.DiT.dit.SwinSTDiTNoExtraMLP
       params:
+        modulate_time_attn: true
+        window_size: [6, 4]
+        # -------------------------
+        causal_time_attn: true
         max_num_frames: 6
         hidden_size: 768
         depth: 24
         num_heads: 16
         mlp_ratio: 4
-        window_size:
-        - 6
-        - 4
         input_size:
         - 18
         - 32
@@ -35,7 +36,7 @@ model:
         dropout: 0.0
         ctx_noise_aug_ratio: 0.1
         ctx_noise_aug_prob: 0.5
-        drop_ctx_rate: 0.1
+        drop_ctx_rate: 0.5
 data:
   target: data.datamodule.DataModuleFromConfig
   params:
