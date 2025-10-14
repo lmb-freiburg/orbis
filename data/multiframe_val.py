@@ -62,7 +62,7 @@ class MultiFrameFromPaths(MultiFrameValidationDataset):
     def __init__(self, *, size, image_paths, num_frames=None):
         super().__init__(size=size)
         self.image_paths = image_paths
-        self.num_frames = num_frames
+        self.num_frames = num_frames or len(image_paths)
         
         self.init_frame_paths()
 

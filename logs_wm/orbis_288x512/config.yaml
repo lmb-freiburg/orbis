@@ -1,0 +1,55 @@
+model:
+  base_learning_rate: 5.0e-05
+  adjust_learning_rate: false
+  find_unused_parameters: true
+  gradient_clip_algorithm: norm
+  precision: 16-mixed
+  grad_clip: 1.0
+  grad_acc_steps: 1
+  target: models.second_stage.fm_model.ModelIF
+  params:
+    warmup_steps: 5000
+    min_lr_multiplier: 0.1
+    enc_scale: 4
+    enc_scale_dino: 4
+    adjust_lr_to_batch_size: false
+    tokenizer_config:
+      folder: $TK_WORK_DIR/2025-04-08T15-23-09_custom_f16_16384_dim16_L5_sepEnc_dinox2_0_vq_only_wo_adv_lmbgpu20_SE2_mixed_adv_dec_only
+      ckpt_path: checkpoints/epoch-3.ckpt
+    generator_config:
+      target: networks.DiT.dit.SwinSTDiT
+      params:
+        max_num_frames: 6
+        hidden_size: 768
+        depth: 24
+        num_heads: 16
+        mlp_ratio: 4
+        window_size:
+        - 6
+        - 4
+        input_size:
+        - 18
+        - 32
+        patch_size: 1
+        in_channels: 32
+        dropout: 0.0
+        ctx_noise_aug_ratio: 0.1
+        ctx_noise_aug_prob: 0.5
+        drop_ctx_rate: 0.1
+data:
+  target: data.datamodule.DataModuleFromConfig
+  params:
+    batch_size: 1
+    num_workers: 4
+    validation:
+      target: data.multiframe_val.MultiFrameFromPaths
+      params:
+        image_paths:
+        - imgs/example/frame_0000.jpg
+        - imgs/example/frame_0001.jpg
+        - imgs/example/frame_0002.jpg
+        - imgs/example/frame_0003.jpg
+        - imgs/example/frame_0004.jpg
+        size:
+        - 288
+        - 512

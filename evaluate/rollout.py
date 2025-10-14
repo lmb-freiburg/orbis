@@ -117,14 +117,11 @@ def generate_images(args: argparse.Namespace, unknown_args: List[str]) -> None:
     else:
         data_cfg = cfg
 
-    # Dataset setup (for conditioning)
-    num_condition_frames = (
-        data_cfg.data.params.validation.params.num_frames - 1
-    )
-    num_frames_total = num_condition_frames + args.num_gen_frames
-
+    num_condition_frames = None
     # If saving real frames too, request longer sequence from the datamodule
     if args.save_real:
+        num_condition_frames = data_cfg.data.params.validation.params.num_frames - 1
+        num_frames_total = num_condition_frames + args.num_gen_frames
         data_cfg.data.params.validation.params.num_frames = num_frames_total
 
     # Ensure we don't drag along training config by accident
@@ -159,27 +156,18 @@ def generate_images(args: argparse.Namespace, unknown_args: List[str]) -> None:
         # Conditioning: take first K frames as input
         cond_x = x[:, :num_condition_frames]
 
-        # autocast only on CUDA (float16) to avoid CPU AMP dtype quirks
-        use_amp = device.type == "cuda"
-        ctx = (
-            torch.cuda.amp.autocast(dtype=torch.float16)
-            if use_amp
-            else torch.autocast(device_type="cpu", dtype=torch.bfloat16)
-        ) if False else torch.autocast(enabled=False, device_type="cuda" if device.type == "cuda" else "cpu")
-
-        # We keep AMP disabled by default; uncomment above to enable on CUDA if desired.
-
-        with torch.no_grad():
-            # model.roll_out returns latents, gen_frames; assume gen_frames: [B, T, C, H, W]
-            latents, gen_frames = model.roll_out(
-                x_0=cond_x,
-                num_gen_frames=args.num_gen_frames,
-                latent_input=False,
-                eta=args.eta,
-                NFE=args.num_steps,
-                sample_with_ema=args.evaluate_ema,
-                num_samples=cond_x.size(0),
-            )
+        with torch.autocast(dtype=torch.float16, device_type='cuda'):
+            with torch.no_grad():
+                # model.roll_out returns latents, gen_frames; assume gen_frames: [B, T, C, H, W]
+                latents, gen_frames = model.roll_out(
+                    x_0=cond_x,
+                    num_gen_frames=args.num_gen_frames,
+                    latent_input=False,
+                    eta=args.eta,
+                    NFE=args.num_steps,
+                    sample_with_ema=args.evaluate_ema,
+                    num_samples=cond_x.size(0),
+                )
 
         # Save generated and (optionally) real frames
         for b in range(x.size(0)):
@@ -288,7 +276,7 @@ def parse_args(argv: Optional[List[str]] = None) -> Tuple[argparse.Namespace, Li
     parser.add_argument(
         "--save_real",
         type=str2bool,
-        default=True,
+        default=False,
         help="Also save ground-truth frames next to generated ones.",
     )
     parser.add_argument(

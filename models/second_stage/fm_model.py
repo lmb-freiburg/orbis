@@ -9,6 +9,7 @@ import pytorch_lightning as pl
 from torch.optim.lr_scheduler import LambdaLR
 from einops import rearrange
 from omegaconf import OmegaConf, ListConfig
+from tqdm import tqdm
 
 
 from util import instantiate_from_config
@@ -251,7 +252,7 @@ class Model(pl.LightningModule):
 
         x_all = x_c.clone()
         samples = []
-        for idx in range(num_gen_frames):
+        for idx in tqdm(range(num_gen_frames), desc="Rolling out frames", leave=False):
             x_last, sample = self.sample(images=x_c, latent=True, eta=eta, NFE=NFE, sample_with_ema=sample_with_ema, num_samples=num_samples)
             
             x_all = torch.cat([x_all, x_last.unsqueeze(1)], dim=1)
