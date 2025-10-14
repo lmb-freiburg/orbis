@@ -20,22 +20,26 @@ conda activate orbis_env
 ```
 
 ## Checkpoints 
-Link to [Checkpoints](https://drive.google.com/file/d/18qGkgOS83TvSSVkTINgckA7DO9VVoz4r/view?usp=sharing)
+<!-- Link to [Checkpoints](https://drive.google.com/file/d/18qGkgOS83TvSSVkTINgckA7DO9VVoz4r/view?usp=sharing) -->
+**Coming soon**
+
+Move the checkpoint in the relevant experiment directory, e.g.:
+```
+mv last.ckpt logs_wm/orbis_288x512/checkpoints
+```
 
 
 ## Autoregressive Video Generation (Roll-out)
-To predict next frames from a set of input images, use:
+To roll-out using the example input frames, use:
 ```bash
-python evaluate/rollout.py --exp_dir STAGE2_EXPERIMENT_DIR --num_gen_frames 120 --num_steps 30
+python evaluate/rollout.py --exp_dir logs_wm/orbis_288x512 --num_gen_frames 120 --num_steps 30
 ```
 
-Alternatively, you can specify a configuration file for the inference data:
+Alternatively, you can either specify a configuration file for the inference data:
 ```bash
 python evaluate/rollout.py --exp_dir STAGE2_EXPERIMENT_DIR --val_config val_config.yaml --num_gen_frames 120 --num_steps 30
 ```
-
-The generated latents can be saved to disk using the `--save_latents` flag. This can be useful for Monte-Carlo sampling and uncertainty evaluation using multiple random seeds.
-
+or modify the frame paths in the default configuration file.
 
 ##  Training
 
