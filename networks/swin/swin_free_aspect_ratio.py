@@ -76,6 +76,100 @@ def window_reverse(windows, window_size, H, W):
     return x
 
 
+class SwinAttention(nn.Module):
+    """ Swin attention only, no MLP. """
+    def __init__(self, dim, input_resolution, num_heads, window_size=(7,7), shift_size=(0,0),
+                 qkv_bias=True, qk_scale=None, qk_norm=False, proj_drop=0., attn_drop=0.,
+                 act_layer=nn.GELU, norm_layer=nn.LayerNorm,
+                 fused_window_process=False):
+        super().__init__()
+        self.dim = dim
+        self.input_resolution = input_resolution
+        self.num_heads = num_heads
+        self.window_size = window_size
+        self.shift_size = shift_size
+        
+        if min(self.input_resolution) <= min(self.window_size) or max(self.input_resolution) <= max(self.window_size):
+            raise ValueError("window size cannot be larger than input resolution")
+            # if window size is larger than input resolution, we don't partition windows
+            self.shift_size = 0
+            self.window_size = min(self.input_resolution)
+        assert 0 <= self.shift_size[0] < self.window_size[0] and 0 <= self.shift_size[1] < self.window_size[1], "shift_size must in [0, window_size)"
+
+        self.attn = WindowAttention(
+            dim, window_size=self.window_size, num_heads=num_heads,
+            qkv_bias=qkv_bias, qk_scale=qk_scale, qk_norm=qk_norm,
+            attn_drop=attn_drop, proj_drop=proj_drop)
+
+        if self.shift_size[0] > 0 or self.shift_size[1] > 0:
+            # calculate attention mask for SW-MSA
+            H, W = self.input_resolution
+            img_mask = torch.zeros((1, H, W, 1))  # 1 H W 1
+            h_slices = (slice(0, -self.window_size[0]),
+                        slice(-self.window_size[0], -self.shift_size[0]),
+                        slice(-self.shift_size[0], None))
+            w_slices = (slice(0, -self.window_size[1]),
+                        slice(-self.window_size[1], -self.shift_size[1]),
+                        slice(-self.shift_size[1], None))
+            cnt = 0
+            for h in h_slices:
+                for w in w_slices:
+                    img_mask[:, h, w, :] = cnt
+                    cnt += 1
+
+            mask_windows = window_partition(img_mask, self.window_size)  # nW, window_size, window_size, 1
+            mask_windows = mask_windows.view(-1, self.window_size[0] * self.window_size[1])
+            attn_mask = mask_windows.unsqueeze(1) - mask_windows.unsqueeze(2)
+            attn_mask = attn_mask.masked_fill(attn_mask != 0, float(-100.0)).masked_fill(attn_mask == 0, float(0.0))
+        else:
+            attn_mask = None
+
+        self.register_buffer("attn_mask", attn_mask)
+        self.fused_window_process = fused_window_process
+
+    def forward(self, x):
+        H, W = self.input_resolution
+        B, L, C = x.shape
+        assert L == H * W, "input feature has wrong size"
+
+        x = x.view(B, H, W, C)
+
+        # cyclic shift
+        if self.shift_size[0] > 0 or self.shift_size[1] > 0:
+            if not self.fused_window_process:
+                shifted_x = torch.roll(x, shifts=(-self.shift_size[0], -self.shift_size[1]), dims=(1, 2))
+                # partition windows
+                x_windows = window_partition(shifted_x, self.window_size)  # nW*B, window_size, window_size, C
+            else:
+                x_windows = WindowProcess.apply(x, B, H, W, C, -self.shift_size[0], self.window_size[1])
+        else:
+            shifted_x = x
+            # partition windows
+            x_windows = window_partition(shifted_x, self.window_size)  # nW*B, window_size, window_size, C
+
+        x_windows = x_windows.view(-1, self.window_size[0] * self.window_size[1], C)  # nW*B, window_size*window_size, C
+
+        # W-MSA/SW-MSA
+        attn_windows = self.attn(x_windows, mask=self.attn_mask)  # nW*B, window_size*window_size, C
+
+        # merge windows
+        attn_windows = attn_windows.view(-1, self.window_size[0], self.window_size[1], C)
+
+        # reverse cyclic shift
+        if self.shift_size[0] > 0 or self.shift_size[1] > 0:
+            if not self.fused_window_process:
+                shifted_x = window_reverse(attn_windows, self.window_size, H, W)  # B H' W' C
+                x = torch.roll(shifted_x, shifts=(self.shift_size[0], self.shift_size[1]), dims=(1, 2))
+            else:
+                x = WindowProcessReverse.apply(attn_windows, B, H, W, C, self.shift_size, self.window_size)
+        else:
+            shifted_x = window_reverse(attn_windows, self.window_size, H, W)  # B H' W' C
+            x = shifted_x
+        x = x.view(B, H * W, C)
+
+        return x
+
+
 class WindowAttention(nn.Module):
     r""" Window based multi-head self attention (W-MSA) module with relative position bias.
     It supports both of shifted and non-shifted window.
@@ -90,7 +184,7 @@ class WindowAttention(nn.Module):
         proj_drop (float, optional): Dropout ratio of output. Default: 0.0
     """
 
-    def __init__(self, dim, window_size, num_heads, qkv_bias=True, qk_scale=None, attn_drop=0., proj_drop=0., fused_attn=True):
+    def __init__(self, dim, window_size, num_heads, qkv_bias=True, qk_scale=None, qk_norm=True, attn_drop=0., proj_drop=0., fused_attn=True):
 
         super().__init__()
         self.dim = dim
@@ -99,6 +193,7 @@ class WindowAttention(nn.Module):
         head_dim = dim // num_heads
         self.scale = qk_scale or head_dim ** -0.5
         self.use_fused_attn = fused_attn
+        self.qk_norm = qk_norm
         
         # define a parameter table of relative position bias
         self.relative_position_bias_table = nn.Parameter(
@@ -121,6 +216,9 @@ class WindowAttention(nn.Module):
         self.attn_drop = nn.Dropout(attn_drop)
         self.proj = nn.Linear(dim, dim)
         self.proj_drop = nn.Dropout(proj_drop)
+        
+        self.q_norm = nn.LayerNorm(head_dim, eps=1e-6) if qk_norm else nn.Identity()
+        self.k_norm = nn.LayerNorm(head_dim, eps=1e-6) if qk_norm else nn.Identity()
 
         trunc_normal_(self.relative_position_bias_table, std=.02)
         self.softmax = nn.Softmax(dim=-1)
@@ -163,7 +261,8 @@ class WindowAttention(nn.Module):
         B_, N, C = x.shape
         qkv = self.qkv(x).reshape(B_, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
         q, k, v = qkv[0], qkv[1], qkv[2]  # make torchscript happy (cannot use tensor as tuple)
-
+        q, k = self.q_norm(q), self.k_norm(k)
+        
         relative_position_bias = self.relative_position_bias_table[self.relative_position_index.view(-1)].view(
         self.window_size[0] * self.window_size[1], self.window_size[0] * self.window_size[1], -1)  # Wh*Ww,Wh*Ww,nH
         relative_position_bias = relative_position_bias.permute(2, 0, 1).contiguous()  # nH, Wh*Ww, Wh*Ww
@@ -216,7 +315,7 @@ class SwinTransformerBlock(nn.Module):
     """
 
     def __init__(self, dim, input_resolution, num_heads, window_size=(7,7), shift_size=(0,0),
-                 mlp_ratio=4., qkv_bias=True, qk_scale=None, drop=0., attn_drop=0., drop_path=0.,
+                 mlp_ratio=4., qkv_bias=True, qk_scale=None, qk_norm=False, drop=0., attn_drop=0., drop_path=0.,
                  act_layer=nn.GELU, norm_layer=nn.LayerNorm,
                  fused_window_process=False):
         super().__init__()
@@ -236,7 +335,8 @@ class SwinTransformerBlock(nn.Module):
         self.norm1 = norm_layer(dim)
         self.attn = WindowAttention(
             dim, window_size=self.window_size, num_heads=num_heads,
-            qkv_bias=qkv_bias, qk_scale=qk_scale, attn_drop=attn_drop, proj_drop=drop)
+            qkv_bias=qkv_bias, qk_scale=qk_scale, qk_norm=qk_norm,
+            attn_drop=attn_drop, proj_drop=drop)
 
         self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
         self.norm2 = norm_layer(dim)

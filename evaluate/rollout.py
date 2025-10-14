@@ -134,6 +134,7 @@ def generate_images(args: argparse.Namespace, unknown_args: List[str]) -> None:
     val_loader = data_module.val_dataloader()
 
     # Progress handling
+    logger.info(f"Saving outputs to: {args.frames_dir}")
     total_batches = length_of(val_loader)
     pbar = tqdm(
         total=total_batches,
@@ -353,7 +354,6 @@ def parse_args(argv: Optional[List[str]] = None) -> Tuple[argparse.Namespace, Li
 
 def main(argv: Optional[List[str]] = None) -> None:
     args, unknown = parse_args(argv)
-    logger.info(f"Saving outputs to: {args.frames_dir}")
     generate_images(args, unknown)
 
 

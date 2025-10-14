@@ -26,7 +26,8 @@ from einops import rearrange
 from timm.models.vision_transformer import PatchEmbed, Attention, Mlp
 from omegaconf import ListConfig
 
-from ..swin.swin_free_aspect_ratio import SwinTransformerBlock
+from ..swin.swin_free_aspect_ratio import SwinTransformerBlock, SwinAttention
+
 
 
 def modulate(x, shift, scale):
@@ -235,11 +236,11 @@ class STDiTBlock(nn.Module):
     """
     A DiT block with adaptive layer norm zero (adaLN-Zero) conditioning.
     """
-    def __init__(self, hidden_size, num_heads, mlp_ratio=4.0, dropout_rate=0.0, **block_kwargs):
+    def __init__(self, hidden_size, num_heads, mlp_ratio=4.0, dropout_rate=0.0, causal_time_attn=False, modulate_time_attn=False, **block_kwargs):
         super().__init__()
         self.norm1 = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
-        self.space_attn = Attention(hidden_size, num_heads=num_heads, qkv_bias=True, qk_norm=True, attn_drop=dropout_rate, proj_drop=dropout_rate, norm_layer=nn.LayerNorm, **block_kwargs)
-        self.time_attn = Attention(hidden_size, num_heads=num_heads, qkv_bias=True, qk_norm=True, attn_drop=dropout_rate, proj_drop=dropout_rate, norm_layer=nn.LayerNorm, **block_kwargs)
+        self.space_attn = Attention(hidden_size, num_heads=num_heads, qkv_bias=True, qk_norm=True, norm_layer=nn.LayerNorm, attn_drop=dropout_rate, proj_drop=dropout_rate, **block_kwargs)
+        self.time_attn = Attention(hidden_size, num_heads=num_heads, qkv_bias=True, qk_norm=True, norm_layer=nn.LayerNorm, attn_drop=dropout_rate, proj_drop=dropout_rate, **block_kwargs)
         self.norm2 = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
         self.norm3 = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
         self.norm4 = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
@@ -251,47 +252,54 @@ class STDiTBlock(nn.Module):
             nn.SiLU(),
             nn.Linear(hidden_size, 9 * hidden_size, bias=True)
         )
-    
-    def _expand(self, param, x):
-        """
-        param: [B, C]
-        x:     [B*R, ...]  (R = F for spatial path, R = N for temporal-MLP)
-        returns [B*R, C] without doing any full copies
-        """
-        B, C = param.shape
-        rep = x.shape[0] // B
-        # -> [B, 1, C] -> [B, rep, C] (no-copy) -> [B*rep, C]
-        return param.view(B, 1, C).expand(-1, rep, -1).reshape(B * rep, C)
+        self.causal_time_attn = causal_time_attn
+        self.modulate_time_attn = modulate_time_attn
+        
+        if modulate_time_attn:
+            self.adaLN_time_attn_modulation = nn.Sequential(
+                nn.SiLU(),
+                nn.Linear(hidden_size, 3 * hidden_size, bias=True)
+            )
+            self.norm_time_attn = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
+            # initialize
+            nn.init.constant_(self.adaLN_time_attn_modulation[-1].weight, 0)
+            nn.init.constant_(self.adaLN_time_attn_modulation[-1].bias, 0)
+        else:
+            self.norm_time_attn = nn.Identity()
 
-    def _apply_mod(self, x, norm, block, shift, scale, gate):
-        shift_e = self._expand(shift, x)
-        scale_e = self._expand(scale, x)
-        gate_e  = self._expand(gate,  x)
-        return x + gate_e.unsqueeze(1) * block(modulate(norm(x), shift_e, scale_e))
 
     def forward(self, x, c):
         B, F, N, D = x.shape
 
         # chunk into 9 [B, C] vectors
         (shift_msa, scale_msa, gate_msa,
-         shift_mlp_s, scale_mlp_s, gate_mlp_s,
-         shift_mlp_t, scale_mlp_t, gate_mlp_t) = self.adaLN_modulation(c).chunk(9, dim=1)
+        shift_mlp_s, scale_mlp_s, gate_mlp_s,
+        shift_mlp_t, scale_mlp_t, gate_mlp_t) = self.adaLN_modulation(c).chunk(9, dim=1)
+        
+        x_modulated = modulate(self.norm1(x), shift_msa, scale_msa)
+        x_modulated = rearrange(x_modulated, 'b f n d -> (b f) n d', b=B, f=F)
+        x_ = self.space_attn(x_modulated)
+        x_ = rearrange(x_, '(b f) n d -> b f n d', b=B, f=F)
+        x = x + gate_msa.unsqueeze(1).unsqueeze(1) * x_
 
-        # — spatial attention path —
-        x = rearrange(x, 'b f n d -> (b f) n d', b=B, f=F)
-        x = self._apply_mod(x, self.norm1, self.space_attn,
-                             shift_msa,   scale_msa,   gate_msa)
-        x = self._apply_mod(x, self.norm2, self.space_mlp,
-                             shift_mlp_s, scale_mlp_s, gate_mlp_s)
+        x_modulated = modulate(self.norm2(x), shift_mlp_s, scale_mlp_s)
+        x = x + gate_mlp_s.unsqueeze(1).unsqueeze(1) * self.space_mlp(x_modulated)
 
         # — temporal attention path —
-        x = rearrange(x, '(b f) n d -> (b n) f d', b=B, f=F, n=N)
-        x = x + self.time_attn(x)   # same as before
-        x = self._apply_mod(x, self.norm3, self.time_mlp,
-                             shift_mlp_t, scale_mlp_t, gate_mlp_t)
-
-        # restore
-        x = rearrange(x, '(b n) f d -> b f n d', b=B, n=N, f=F)
+        if self.modulate_time_attn:
+            shift_mta, scale_mta, gate_mta = self.adaLN_time_attn_modulation(c).chunk(3, dim=1)
+        else:
+            shift_mta, scale_mta, gate_mta = torch.zeros_like(shift_mlp_t), torch.zeros_like(scale_mlp_t), torch.ones_like(gate_mlp_t)
+        x_modulated = modulate(self.norm_time_attn(x), shift_mta, scale_mta)
+        x_modulated = rearrange(x_modulated, 'b f n d -> (b n) f d', b=B, f=F, n=N)
+        time_attn_mask = torch.tril(torch.ones(F, F, device=x.device)) if self.causal_time_attn else None
+        x_ = self.time_attn(x_modulated, attn_mask=time_attn_mask)
+        x_ = rearrange(x_, '(b n) f d -> b f n d', b=B, n=N, f=F)
+        x = x + gate_mta.unsqueeze(1).unsqueeze(1) * x_
+        
+        x_modulated = modulate(self.norm3(x), shift_mlp_t, scale_mlp_t)
+        x = x + gate_mlp_t.unsqueeze(1).unsqueeze(1) * self.time_mlp(x_modulated)  
+        
         return x
     
     
@@ -308,6 +316,7 @@ class SwinSTDiTBlock(nn.Module):
                 mlp_ratio=mlp_ratio,
                 drop=dropout_rate,
                 attn_drop=dropout_rate,
+                qk_norm=False,
                 )
         self.time_attn = Attention(hidden_size, num_heads=num_heads, qkv_bias=True, qk_norm=True, attn_drop=dropout_rate, proj_drop=dropout_rate, norm_layer=nn.LayerNorm, **block_kwargs)
         self.norm2 = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
@@ -564,15 +573,14 @@ class DiT(nn.Module):
 
 
 class STDiT(DiT):
-    """Spatiotemporal DiT"""
-    def __init__(self, input_size=16, patch_size=2, in_channels=32, hidden_size=1152, depth=28, num_heads=16, mlp_ratio=4.0, max_num_frames=6, dropout=0.1, ctx_noise_aug_ratio=0.1, ctx_noise_aug_prob=0.5, drop_ctx_rate=0.2, frequency_range=(2, 15), **kwargs):
-        super().__init__(input_size=input_size, patch_size=patch_size, in_channels=in_channels, hidden_size=hidden_size, depth=depth, num_heads=num_heads, mlp_ratio=mlp_ratio, max_num_frames=max_num_frames, dropout=dropout, ctx_noise_aug_ratio=ctx_noise_aug_ratio, ctx_noise_aug_prob=ctx_noise_aug_prob, drop_ctx_rate=drop_ctx_rate, frequency_range=frequency_range, **kwargs)
+    def __init__(self, input_size=16, patch_size=2, in_channels=32, hidden_size=1152, depth=28, num_heads=16, mlp_ratio=4.0, max_num_frames=6, dropout=0.1, ctx_noise_aug_ratio=0.1, ctx_noise_aug_prob=0.5, drop_ctx_rate=0.2, frequency_range=(2, 15), causal_time_attn=False, modulate_time_attn=False, **kwargs):
+        super().__init__(input_size=input_size, patch_size=patch_size, in_channels=in_channels, hidden_size=hidden_size, depth=depth, num_heads=num_heads, mlp_ratio=mlp_ratio, max_num_frames=max_num_frames, dropout=dropout, ctx_noise_aug_ratio=ctx_noise_aug_ratio, ctx_noise_aug_prob=ctx_noise_aug_prob, drop_ctx_rate=drop_ctx_rate, **kwargs)
         self.blocks = nn.ModuleList([
-                STDiTBlock(hidden_size, num_heads, mlp_ratio=mlp_ratio, dropout_rate=dropout) for _ in range(depth)
+                STDiTBlock(hidden_size, num_heads, mlp_ratio=mlp_ratio, dropout_rate=dropout, causal_time_attn=causal_time_attn, modulate_time_attn=modulate_time_attn) for _ in range(depth)
             ])
 
 
-    def forward(self, target, context, t, frame_rate):
+    def forward(self, target, context, t, frame_rate, return_features=False):
         """
         Forward pass of DiT.
         x: (N, F, C, H, W) tensor of spatial inputs (images or latent representations of images)
@@ -584,11 +592,16 @@ class STDiT(DiT):
         
         x = self.preprocess_inputs(target, context, t, frame_rate)  # (B, F, N, D)
 
-        for block in self.blocks:
+        features = []
+        for i, block in enumerate(self.blocks):
             x = block(x, c)
+            # features[i] = x
 
         out = self.final_layer(x[:,-f_pred:], c)                # (N, T, patch_size * out_channels)
         out = self.postprocess_outputs(out)  # (N, T, patch_size ** 2 * out_channels)
+        if return_features:
+            raise NotImplementedError
+            return out, features
         return out
     
 
@@ -598,3 +611,19 @@ class SwinSTDiT(STDiT):
         self.blocks = nn.ModuleList([
                 SwinSTDiTBlock(hidden_size=hidden_size, num_heads=num_heads, input_shape=input_size, layer_idx=layer_idx, mlp_ratio=mlp_ratio, window_size=window_size, dropout_rate=dropout) for layer_idx in range(depth)
             ])
+
+
+class SwinSTDiTNoExtraMLP(STDiT):
+    def __init__(self, input_size=16, patch_size=2, in_channels=32, hidden_size=1152, depth=28, num_heads=16, mlp_ratio=4.0, max_num_frames=6, window_size=[6, 4], dropout=0.1, ctx_noise_aug_ratio=0.1,ctx_noise_aug_prob=0.5, drop_ctx_rate=0.2, frequency_range=(2, 15), **kwargs):
+        super().__init__(input_size=input_size, patch_size=patch_size, in_channels=in_channels, hidden_size=hidden_size, depth=depth, num_heads=num_heads, mlp_ratio=mlp_ratio, max_num_frames=max_num_frames, dropout=dropout, ctx_noise_aug_ratio=ctx_noise_aug_ratio, ctx_noise_aug_prob=ctx_noise_aug_prob, drop_ctx_rate=drop_ctx_rate, **kwargs)
+        for block_idx, block in enumerate(self.blocks):
+            block.space_attn = SwinAttention(
+                hidden_size,
+                input_resolution=input_size,
+                num_heads=num_heads,
+                window_size=window_size,
+                shift_size=(0,0) if (block_idx % 2 == 0) else [ws//2 for ws in window_size],
+                proj_drop=dropout,
+                attn_drop=dropout,
+                qk_norm=True,
+            )
