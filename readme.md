@@ -20,8 +20,7 @@ conda activate orbis_env
 ```
 
 ## Checkpoints 
-<!-- Link to [Checkpoints](https://drive.google.com/file/d/18qGkgOS83TvSSVkTINgckA7DO9VVoz4r/view?usp=sharing) -->
-**Coming soon**
+Link to [Checkpoints](https://huggingface.co/lmb-freiburg/Orbis/tree/main)
 
 Move the checkpoint in the relevant experiment directory, e.g.:
 ```
