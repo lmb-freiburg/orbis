@@ -14,8 +14,8 @@ model:
     enc_scale_dino: 4
     adjust_lr_to_batch_size: false
     tokenizer_config:
-      folder: $TK_WORK_DIR/2025-04-08T15-23-09_custom_f16_16384_dim16_L5_sepEnc_dinox2_0_vq_only_wo_adv_lmbgpu20_SE2_mixed_adv_dec_only
-      ckpt_path: checkpoints/epoch-3.ckpt
+      folder: $TK_WORK_DIR/tokenizer_288x512
+      ckpt_path: checkpoints/tokenizer_288x512.ckpt
     generator_config:
       target: networks.DiT.dit.SwinSTDiTNoExtraMLP
       params:

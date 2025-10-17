@@ -27,6 +27,17 @@ Move the checkpoint in the relevant experiment directory, e.g.:
 mv last.ckpt logs_wm/orbis_288x512/checkpoints
 ```
 
+If you only need the tokenizer move the tokenizer checkpoint in the relevant experiment directory, e.g.:
+```
+mv last.ckpt logs_tk/tokenizer_288x512/checkpoints
+```
+
+Define the path to tokenizer and world model:
+```
+export PATH_TO logs_tk
+export PATH_TO logs_wm
+```
+
 
 ## Autoregressive Video Generation (Roll-out)
 To roll-out using the example input frames, use:
