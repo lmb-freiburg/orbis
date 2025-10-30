@@ -34,8 +34,8 @@ mv last.ckpt logs_tk/tokenizer_288x512/checkpoints
 
 Define the path to tokenizer and world model:
 ```
-export PATH_TO logs_tk
-export PATH_TO logs_wm
+export PATH_TO_logs_tk
+export PATH_TO_logs_wm
 ```
 
 
