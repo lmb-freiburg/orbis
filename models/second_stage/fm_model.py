@@ -49,10 +49,11 @@ class Model(pl.LightningModule):
     - sample: to generate new samples from the model (from start to end), given a set of input frames.
     - roll_out: to generate a sequence of samples autoregressively, given a set of starting input frames and a number of frames to generate.
     """
-    def __init__(self, *, tokenizer_config, generator_config, adjust_lr_to_batch_size=False, sigma_min=1e-5, timescale=1.0, enc_scale=4, warmup_steps=5000, min_lr_multiplier=0.1):
+    def __init__(self, *, tokenizer_config, generator_config, adjust_lr_to_batch_size=False, sigma_min=1e-5, timescale=1.0, enc_scale=4, warmup_steps=5000, min_lr_multiplier=0.1, num_pred_frames=1):
         super().__init__()
         self.warmup_steps = warmup_steps
         self.min_lr_multiplier = min_lr_multiplier
+        self.num_pred_frames = num_pred_frames
         
         # Training parameters
         self.adjust_lr_to_batch_size = adjust_lr_to_batch_size
@@ -353,7 +354,8 @@ class ModelIF(Model):
     Flow matching model for token factorization latents (IF: Image Folder)
     """
     def __init__(self, *, tokenizer_config, generator_config, adjust_lr_to_batch_size=False, 
-                 sigma_min=1e-5, timescale=1.0, enc_scale=1.89066, enc_scale_dino=3.45062, warmup_steps=5000, min_lr_multiplier=0.1):
+                 sigma_min=1e-5, timescale=1.0, enc_scale=1.89066, enc_scale_dino=3.45062, warmup_steps=5000, min_lr_multiplier=0.1,
+                 **kwargs):
         super().__init__(
             tokenizer_config=tokenizer_config,
             generator_config=generator_config,
@@ -362,7 +364,8 @@ class ModelIF(Model):
             timescale=timescale,
             enc_scale=enc_scale,
             warmup_steps=warmup_steps,
-            min_lr_multiplier=min_lr_multiplier
+            min_lr_multiplier=min_lr_multiplier,
+            **kwargs
         )
         self.enc_scale_dino = enc_scale_dino
         

@@ -12,6 +12,7 @@ import cv2
 from PIL import Image
 import sqlite3
 import pandas as pd
+from .utils import get_trajectory_from_speeds_and_yaw_rates
 
 
 class MultiFrameValidationDataset(Dataset):
@@ -85,8 +86,9 @@ class JSONFramesListLoader(MultiFrameValidationDataset):
     The frames are resized and cropped to a specified size, and normalized to the range [-1, 1].
     """
     
-    def __init__(self, *, size, json_path, images_root, num_frames=None, frame_rate_multiplier=1, sample_indices=None):
-        super().__init__(size=size, num_frames=num_frames, sample_indices=sample_indices)
+    def __init__(self, *, size, json_path, images_root, num_frames=None, frame_rate_multiplier=1, sample_indices=None):        
+        super().__init__(size=size, num_frames=num_frames)
+        self.sample_indices = sample_indices
         self.json_path = json_path
         self.images_root = images_root
         
@@ -117,7 +119,73 @@ class JSONFramesListLoader(MultiFrameValidationDataset):
             # If sample_indices is provided, filter the data to only include the specified indices
             self.frame_paths = [self.frame_paths[i] for i in self.sample_indices]
         
+
+def extract_pose_table(db_path):
+    """
+    Connects to the nuPlan SQLite database and extracts the entire ego_pose table.
+    Returns a pandas DataFrame containing the pose metadata.
+    """
+    conn = sqlite3.connect(db_path)
+    query = "SELECT * FROM ego_pose;"
+    pose_df = pd.read_sql_query(query, conn)
+    conn.close()
+    # Ensure timestamp is numeric and sort by timestamp
+    pose_df['timestamp'] = pd.to_numeric(pose_df['timestamp'], errors='coerce')
+    pose_df.sort_values("timestamp", inplace=True)
+    return pose_df
+
+def get_pose(pose_df, pose_token):
+    tk = bytes.fromhex(pose_token)
+    pose = pose_df[pose_df['token'] == tk]
+    if pose.empty:
+        raise ValueError(f"Pose with token {pose_token} not found.")
+    return pose
+
+
+class JSONFramesListLoaderSteering(JSONFramesListLoader):
+    def __init__(self, *, size, json_path, images_root, dbs_root, annotation_key, num_frames=None, stored_data_frame_rate=10, frame_rate=5, sample_indices=None):
+        self.frame_rate = frame_rate
+        self.stored_data_frame_rate = stored_data_frame_rate
+        frame_rate_multiplier = frame_rate / stored_data_frame_rate
+        super().__init__(size=size, json_path=json_path, images_root=images_root, num_frames=num_frames, frame_rate_multiplier=frame_rate_multiplier, sample_indices=sample_indices)
+        self.dbs_root = dbs_root
+        self.annotation_key = annotation_key
+        assert self.annotation_key in ['speed_yawrate', 'trajectory'], f"Unsupported annotation key {self.annotation_key}"
+    
+    def __getitem__(self, index):
+        images = super().__getitem__(index)
+        sample = self.data[index]
+        pose_table = extract_pose_table(os.path.join(self.dbs_root, sample['db_name']))
+        pose_tokens = sample['pose_tokens']
+        poses = [get_pose(pose_table, pose_token) for pose_token in pose_tokens]
+        # get steeting signals: 'vx' and 'angular_rate_z'
+        speeds = np.array([pose['vx'].values[0] for pose in poses])
+        yaw_rates = np.array([pose['angular_rate_z'].values[0] for pose in poses])
         
-    
-    
+        if self.annotation_key == 'speed_yawrate':
+            speed_yawrate = np.stack([speeds, yaw_rates], axis=-1)
+            steering = speed_yawrate[::self.frame_interval]
+            if self.num_frames is not None:
+                assert len(steering) >= self.num_frames, f"Speed/YawRate length {len(steering)} is less than the required {self.num_frames}"
+                steering = steering[:self.num_frames]
+        elif self.annotation_key == 'trajectory':
+            traj, headings = get_trajectory_from_speeds_and_yaw_rates(speeds, yaw_rates, dt=1/self.stored_data_frame_rate)
+            traj, headings = traj[::self.frame_interval], headings[::self.frame_interval]
+            if self.num_frames is not None:
+                assert len(traj) >= self.num_frames, f"Trajectory length {len(traj)} is less than the required {self.num_frames}"
+                traj = traj[:self.num_frames]
+                headings = headings[:self.num_frames]
+            steering = np.concatenate([traj, headings[:, None]], axis=-1)
+        else:
+            raise ValueError(f"Unsupported annotation key {self.annotation_key}")
+        
+        assert len(steering) == images.shape[0], f"Steering signals {len(steering)} and images {images.shape[0]} do not match"
+        
+        return {
+            'images': images,
+            'steering': torch.from_numpy(steering).float(),
+            'frame_rate': torch.tensor(self.frame_rate).float(),
+        }
+
+
     
