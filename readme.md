@@ -20,7 +20,7 @@ conda activate orbis_env
 ```
 
 ## Checkpoints 
-Link to [Checkpoints](https://huggingface.co/lmb-freiburg/Orbis/tree/main)
+Link to the [Checkpoints](https://huggingface.co/lmb-freiburg/Orbis/tree/main/checkpoints) on Huggingface.
 
 Move the checkpoint in the relevant experiment directory, e.g.:
 ```
@@ -50,6 +50,8 @@ Alternatively, you can either specify a configuration file for the inference dat
 python evaluate/rollout.py --exp_dir STAGE2_EXPERIMENT_DIR --val_config val_config.yaml --num_gen_frames 120 --num_steps 30
 ```
 or modify the frame paths in the default configuration file.
+
+To reproduce the paper results on you can find the validation sets [here](https://huggingface.co/lmb-freiburg/Orbis/tree/main/validation_sets).
 
 ##  Training
 
