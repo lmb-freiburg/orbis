@@ -374,35 +374,28 @@ class ModelIF(Model):
 
         b, f, e, h, w = x.size()
 
-        
-        if f == 1:
-            context = None
-            target = x.squeeze(1)
-        else:
-            context = x[:,:-1].clone()
-            target = x[:,-1]
+        context = x[:,:-1].clone() if f > 1 else None
+        target = x[:,-1:]  # [B, 1, e, h, w] — keep frame dim
 
         t = torch.rand((x.shape[0],), device=x.device)
         target_t, noise = self.add_noise(target, t)
-        
-        target_t = target_t.unsqueeze(1)
-        
+
         pred = self.vit(target_t, context, t, frame_rate=frame_rate)
-        
+
         # -dxt/dt
         target = self.A(t) * target + self.B(t) * noise
 
         loss = ((pred.float() - target.float()) ** 2)
-        
+
         loss_recon = loss[:,:loss.size(1)//2].mean()
         loss_sem = loss[:,loss.size(1)//2:].mean()
         loss = loss.mean()
-            
+
         self.log("train/loss", loss.item(), prog_bar=True, logger=True, on_step=True, on_epoch=True, sync_dist=True)
         self.log("train/loss_recon", loss_recon.item(), prog_bar=True, logger=True, on_step=True, on_epoch=True, sync_dist=True)
         self.log("train/loss_sem", loss_sem.item(), prog_bar=True, logger=True, on_step=True, on_epoch=True, sync_dist=True)
-        
-        return loss 
+
+        return loss
 
 
 
@@ -411,22 +404,15 @@ class ModelIF(Model):
         x = self.encode_frames(images)
 
         b, f, e, h, w = x.size()
-        
-        if f == 1:
-            context = None
-            target = x.squeeze(1)
-        else:
-            context = x[:,:-1].clone()
-            target = x[:,-1]
+
+        context = x[:,:-1].clone() if f > 1 else None
+        target = x[:,-1:]  # [B, 1, e, h, w] — keep frame dim
 
         t = torch.rand((x.shape[0],), device=x.device)
         target_t, noise = self.add_noise(target, t)
-        
-        target_t = target_t.unsqueeze(1)
-        
-        
+
         pred = self.vit(target_t, context, t, frame_rate=frame_rate)
-        
+
         # -dxt/dt
         target = self.A(t) * target + self.B(t) * noise
 
