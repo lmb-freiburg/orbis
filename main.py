@@ -212,8 +212,13 @@ if __name__ == "__main__":
     
 
     if opt.n_gpus is None:
-        # use slurm env vars if available otherwise use all CUDA_AVAILABLE gpus
-        opt.n_gpus = int(os.environ.get("SLURM_NTASKS_PER_NODE", torch.cuda.device_count()))
+        # use slurm env vars if available otherwise use all CUDA_AVAILABLE gpus or MPS
+        # OLD: opt.n_gpus = int(os.environ.get("SLURM_NTASKS_PER_NODE", torch.cuda.device_count()))
+        if torch.backends.mps.is_available():
+            default_gpus = 1  # MPS counts as 1 device
+        else:
+            default_gpus = torch.cuda.device_count()
+        opt.n_gpus = int(os.environ.get("SLURM_NTASKS_PER_NODE", default_gpus))
     if opt.n_nodes is None:
         # use slurm env vars if available otherwise set to 1
         opt.n_nodes = int(os.environ.get("SLURM_NNODES", 1))

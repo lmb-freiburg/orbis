@@ -1,0 +1,6 @@
+*.jpg
+*.pyc
+*.pth
+*.DS_Store
+*.ckpt
+*.gif

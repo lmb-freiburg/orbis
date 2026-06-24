@@ -228,6 +228,8 @@ class CrossAttention(nn.Module):
        v = self.v_proj(y).reshape(B, M, self.num_heads, self.head_dim).transpose(1, 2)
        if self.qk_norm:
            q, k = self.q_norm(q), self.k_norm(k)
+       # Cast v to match q dtype (fixes mixed precision issues)
+       v = v.to(q.dtype)
        attn_output = F.scaled_dot_product_attention(q, k, v, dropout_p=self.attn_drop.p if self.training else 0.0)
        attn_output = attn_output.transpose(1, 2).reshape(B, N, C)
        return self.proj_drop(self.proj(attn_output))
