@@ -118,23 +118,33 @@ if __name__ == "__main__":
             
         all_frames = sorted(all_frames)
         
-        if len(all_frames) < 5:
-            print(f"⚠️ Skipping Sequence {seq_id}: Found only {len(all_frames)} frames (minimum 5 required).")
+        # --- NEW SAMPLING LOGIC ---
+        # Dataset is 20 Hz, Target is 5 FPS -> Sample every 4th frame (20 / 5 = 4)
+        stride = 4
+        required_context_count = 5
+        # Total minimum frames needed to sample 5 frames with a stride of 4 from the end:
+        # 1 (the last frame) + 4 * (5 - 1) = 17 frames minimum
+        min_required_frames = 1 + stride * (required_context_count - 1)
+        
+        if len(all_frames) < min_required_frames:
+            print(f"⚠️ Skipping Sequence {seq_id}: Found only {len(all_frames)} frames (minimum {min_required_frames} required for 5 FPS downsampling).")
             continue
             
-        last_5_frames = all_frames[-5:]
+        # Sample 5 frames backwards starting from the last frame, then reverse back to chronological order
+        sampled_context_frames = all_frames[-1:-(stride * required_context_count)-1:-stride][::-1]
+        # --------------------------
         
         # 2. Print the titles/filenames of the 5 input context frames along with the current sequence ID
         print(f"\n" + "="*60)
         print(f"🚀 Processing Sequence ID: {seq_id}")
-        print("Using context frames:")
-        for frame in last_5_frames:
+        print("Using downsampled context frames (5 FPS from end):")
+        for frame in sampled_context_frames:
             print(f"  - {os.path.basename(frame)}")
         print("="*60)
         
         custom_pipeline_overrides = {
-            "model.params.generator_config.params.max_num_frames": 5,
-            "data.params.validation.params.image_paths": last_5_frames
+            "model.params.generator_config.params.max_num_frames": required_context_count,
+            "data.params.validation.params.image_paths": sampled_context_frames
         }
         
         run_orbis_test_pipeline(

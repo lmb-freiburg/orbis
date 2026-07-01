@@ -4,3 +4,6 @@
 *.DS_Store
 *.ckpt
 *.gif
+*.png
+*.txt
+*.npy
