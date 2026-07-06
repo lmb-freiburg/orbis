@@ -1,5 +1,6 @@
 import os
 import json
+import shutil
 import torch
 from torch.utils.data import Dataset, DataLoader, random_split
 from torchvision import transforms
@@ -22,9 +23,7 @@ class DoTAClipDataset(Dataset):
             return all(os.path.exists(path) for path in clip_paths)
 
         # Iterate over all folders in the sequence directory
-        ct = 0
-        for video_name in os.listdir(sequence_dir):
-            ct +=1
+        for idx, video_name in enumerate(os.listdir(sequence_dir)):
             video_folder = os.path.join(sequence_dir, video_name, 'images')
             
             # Ensure we are only looking at directories
@@ -56,10 +55,11 @@ class DoTAClipDataset(Dataset):
             # ----------------------------------------------------
             # Modified to replace 'frames' with 'DOTA_sequences'
             anomaly_clip = [
-                os.path.join(self.sequence_dir, frames_meta[i]['image_path'].replace('frames', 'DOTA_sequences'))
+                os.path.join(self.sequence_dir, frames_meta[i]['image_path'].replace('frames/', ''))
                 for i in range(anomaly_start, anomaly_start + 5)
             ]
             
+            # print (anomaly_clip, '\n')
             if is_valid_clip(anomaly_clip):
                 self.samples.append({
                     'video_name': video_name,
@@ -96,6 +96,11 @@ class DoTAClipDataset(Dataset):
                     'clip_type': 'furthest_normal'
                 })
 
+        labels = [sample['label'] for sample in self.samples]
+        labels_tensor = torch.tensor(labels, dtype=torch.int64)
+        counts = torch.bincount(labels_tensor)
+        print('---------',counts[0].item(), counts[1].item(), '-------------')
+
     def __len__(self):
         return len(self.samples)
 
@@ -120,9 +125,9 @@ class DoTAClipDataset(Dataset):
         return clip_tensor, torch.tensor(label, dtype=torch.float32)
 
 
-def get_dota_dataloaders(sequence_dir, annotation_dir, batch_size=8, num_workers=4):
+def get_dota_dataloaders(sequence_dir, annotation_dir, batch_size=8, num_workers=4, max_samples=2000):
     """
-    Initializes the dataset, splits it 80/20, and returns Train/Val DataLoaders.
+    Initializes the dataset, splits it 80/20, empties target export directories, and returns Train/Val DataLoaders.
     """
     transform = transforms.Compose([
         transforms.Resize((288, 512)),
@@ -132,6 +137,8 @@ def get_dota_dataloaders(sequence_dir, annotation_dir, batch_size=8, num_workers
     
     # Initialize the full dataset
     full_dataset = DoTAClipDataset(sequence_dir, annotation_dir, transform=transform)
+    if max_samples is not None:
+        full_dataset.samples = full_dataset.samples[:max_samples]
     
     # Calculate 80-20 split sizes
     total_size = len(full_dataset)
@@ -155,6 +162,36 @@ def get_dota_dataloaders(sequence_dir, annotation_dir, batch_size=8, num_workers
         [train_size, val_size],
         generator=torch.Generator().manual_seed(42)
     )
+
+    # ----------------------------------------------------
+    # NEW: Empty target export directories before copying
+    # ----------------------------------------------------
+    export_root_dir = "../DOTA_training"
+    if os.path.exists(export_root_dir):
+        print(f"Cleaning out old export directory: {export_root_dir}")
+        shutil.rmtree(export_root_dir)
+    os.makedirs(export_root_dir, exist_ok=True)
+
+    def export_split(subset, split_name, export_root="../DOTA_training", extra_export_root=None):
+        for sample_idx in subset.indices:
+            sample = full_dataset.samples[sample_idx]
+            video_id = sample["video_name"]
+            class_name = "anamolous" if sample["label"] == 1 else "good"
+            target_dirs = [os.path.join(export_root, split_name, f"{video_id}_{class_name}")]
+            if extra_export_root is not None:
+                target_dirs.append(os.path.join(extra_export_root, split_name, f"{video_id}_{class_name}"))
+
+            for target_dir in target_dirs:
+                os.makedirs(target_dir, exist_ok=True)
+
+                for frame_idx, src_path in enumerate(sample["clip_paths"]):
+                    _, ext = os.path.splitext(src_path)
+                    dst_path = os.path.join(target_dir, f"frame_{frame_idx:04d}{ext}")
+                    shutil.copy2(src_path, dst_path)
+
+    # Note: Passed export_root and extra_export_root pointing to the same folder as per original structure.
+    export_split(train_dataset, "train", export_root=export_root_dir, extra_export_root=export_root_dir)
+    export_split(val_dataset, "val", export_root=export_root_dir)
     
     # Initialize DataLoaders
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers)
@@ -164,8 +201,6 @@ def get_dota_dataloaders(sequence_dir, annotation_dir, batch_size=8, num_workers
 
 
 if __name__ == "__main__":
-    # Define your paths here (adjust relative to where you run the script)
-    # Since this will be inside the 'data' folder, use relative paths to the repo root
     SEQ_DIR = "../DoTA_sequences"
     ANNO_DIR = "../DOTA_annotations"
     
@@ -173,13 +208,13 @@ if __name__ == "__main__":
     
     try:
         # Create dataloaders
-        train_loader, val_loader = get_dota_dataloaders(SEQ_DIR, ANNO_DIR, batch_size=2, num_workers=0)
+        train_loader, val_loader = get_dota_dataloaders(SEQ_DIR, ANNO_DIR, batch_size=10, num_workers=0)
         
         # Fetch one batch to verify the tensor shapes and labels
         for clips, labels in train_loader:
             print("\n--- Batch Verification ---")
-            print(f"Clip tensor shape: {clips.shape}  --> Expected: [Batch=2, Channels=3, Time=5, Height=288, Width=512]")
-            print(f"Labels shape:      {labels.shape}  --> Expected: [Batch=2]")
+            print(f"Clip tensor shape: {clips.shape}  --> Expected: [Batch=10, Channels=3, Time=5, Height=288, Width=512]")
+            print(f"Labels shape:      {labels.shape}  --> Expected: [Batch=10]")
             print(f"Labels values:     {labels.tolist()}")
             break
             

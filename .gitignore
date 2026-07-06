@@ -7,3 +7,5 @@
 *.png
 *.txt
 *.npy
+*.pt
+*DONTUSE*
