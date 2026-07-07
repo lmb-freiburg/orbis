@@ -69,6 +69,7 @@ def cache_features(model, dataloader, device, save_path, checkpoint_interval=100
                 clips = clips.permute(0, 2, 1, 3, 4).contiguous()
                 latents = model.encode_frames(clips)
                 context = latents[:, :-1].contiguous() if latents.size(1) > 1 else None
+                print('----------', context.shape, '----------')
                 target = latents[:, -1:].contiguous()
                 
                 # MPS optimization: explicit float32 constraints prevent internal ops mismatch
@@ -83,6 +84,8 @@ def cache_features(model, dataloader, device, save_path, checkpoint_interval=100
             # features = activation['block_20']
             # 3. Retrieve the intercepted features from Block 10
             features = activation['block_18']
+
+            print('---------- Activations Shape - ', features.shape, '----------')
             
             # 4. Spatio-Temporal Pooling
             # print ("Pooled features shape - ", features.shape)
@@ -147,7 +150,7 @@ if __name__ == "__main__":
         args.anno_dir,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
-        
+
     )
 
     model = load_model_from_config(args.exp_dir, args.config, args.ckpt, device)

@@ -174,9 +174,7 @@ def get_dota_dataloaders(sequence_dir, annotation_dir, batch_size=8, num_workers
         generator=torch.Generator().manual_seed(42)
     )
 
-    # ----------------------------------------------------
-    # NEW: Randomly Select 100 indices for GIFs
-    # ----------------------------------------------------
+    # Randomly Select 100 indices for GIFs
     good_indices = [i for i, sample in enumerate(full_dataset.samples) if sample["label"] == 0]
     anomalous_indices = [i for i, sample in enumerate(full_dataset.samples) if sample["label"] == 1]
     
