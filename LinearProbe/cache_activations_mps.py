@@ -47,7 +47,7 @@ def cache_features(model, dataloader, device, save_path, checkpoint_interval=100
 
     # 2. Register the hook to the 20th block (index 19)
     # hook_handle = backbone.blocks[19].register_forward_hook(get_activation('block_20'))
-    hook_handle = backbone.blocks[9].register_forward_hook(get_activation('block_10'))
+    hook_handle = backbone.blocks[17].register_forward_hook(get_activation('block_18'))
     
     all_features = []
     all_labels = []
@@ -82,13 +82,13 @@ def cache_features(model, dataloader, device, save_path, checkpoint_interval=100
             # # 3. Retrieve the intercepted features from Block 20
             # features = activation['block_20']
             # 3. Retrieve the intercepted features from Block 10
-            features = activation['block_10']
+            features = activation['block_18']
             
             # 4. Spatio-Temporal Pooling
-            print ("Pooled features shape - ", features.shape)
-            pooled_features = features.mean(dim=(1, 2)) if features.dim() == 4 else features.mean(dim=1)
+            # print ("Pooled features shape - ", features.shape)
+            # features = features.mean(dim=(1, 2)) if features.dim() == 4 else features.mean(dim=1)
             
-            all_features.append(pooled_features.cpu())
+            all_features.append(features.cpu())
             all_labels.append(labels.cpu())
 
             # 5. Incremental Caching checkpointing logic
@@ -147,6 +147,7 @@ if __name__ == "__main__":
         args.anno_dir,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
+        
     )
 
     model = load_model_from_config(args.exp_dir, args.config, args.ckpt, device)
@@ -156,7 +157,7 @@ if __name__ == "__main__":
         train_loader, 
         device, 
         # os.path.join(args.save_dir, "train_block20.pt"),
-        os.path.join(args.save_dir, "train_block10.pt"),
+        os.path.join(args.save_dir, "train_block18.pt"),
         checkpoint_interval=args.checkpoint_interval
     )
     cache_features(
@@ -164,6 +165,6 @@ if __name__ == "__main__":
         val_loader, 
         device, 
         # os.path.join(args.save_dir, "val_block20.pt"),
-        os.path.join(args.save_dir, "val_block10.pt"),
+        os.path.join(args.save_dir, "val_block18.pt"),
         checkpoint_interval=args.checkpoint_interval
     )

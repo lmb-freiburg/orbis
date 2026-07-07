@@ -1,6 +1,7 @@
 import os
 import json
 import shutil
+import random
 import torch
 from torch.utils.data import Dataset, DataLoader, random_split
 from torchvision import transforms
@@ -46,20 +47,20 @@ class DoTAClipDataset(Dataset):
             anomaly_end = anno['anomaly_end']
             frames_meta = anno['labels']
 
-            # Ensure we have enough frames to extract a 5-frame clip
-            if num_frames < 5 or (anomaly_start + 4) >= num_frames:
+            # To get 5 frames at 5 Hz from 10 Hz data, we need a window of 9 raw frames:
+            # Indices: [start, start+2, start+4, start+6, start+8] -> 5 frames total.
+            if num_frames < 9 or (anomaly_start + 8) >= num_frames:
                 continue
 
             # ----------------------------------------------------
             # 1. Extract Anomaly Clip (Positive Class: Label 1)
             # ----------------------------------------------------
-            # Modified to replace 'frames' with 'DOTA_sequences'
+            # Subsample by step of 2 to achieve 5 Hz target frame rate
             anomaly_clip = [
                 os.path.join(self.sequence_dir, frames_meta[i]['image_path'].replace('frames/', ''))
-                for i in range(anomaly_start, anomaly_start + 5)
+                for i in range(anomaly_start, anomaly_start + 9, 2)
             ]
             
-            # print (anomaly_clip, '\n')
             if is_valid_clip(anomaly_clip):
                 self.samples.append({
                     'video_name': video_name,
@@ -71,35 +72,45 @@ class DoTAClipDataset(Dataset):
             # ----------------------------------------------------
             # 2. Extract Normal Clip (Negative Class: Label 0)
             # ----------------------------------------------------
-            left_distance = anomaly_start
-            right_distance = num_frames - 1 - anomaly_end
-
-            # Pick the furthest continuous 5 frames from the anomaly
-            if left_distance >= right_distance and left_distance >= 5:
+            # Always pick from the beginning of the video, provided it 
+            # does not overlap with an early-starting anomaly.
+            if anomaly_start >= 9:
                 normal_start = 0
-            elif right_distance > left_distance and right_distance >= 5:
-                normal_start = num_frames - 5
-            else:
-                continue 
 
-            # Modified to replace 'frames' with 'DOTA_sequences'
-            normal_clip = [
-                os.path.join(self.sequence_dir, frames_meta[i]['image_path'].replace('frames/', ''))
-                for i in range(normal_start, normal_start + 5)
-            ]
-            
-            if is_valid_clip(normal_clip):
-                self.samples.append({
-                    'video_name': video_name,
-                    'clip_paths': normal_clip,
-                    'label': 0,
-                    'clip_type': 'furthest_normal'
-                })
+                # Subsample normal clip by step of 2
+                normal_clip = [
+                    os.path.join(self.sequence_dir, frames_meta[i]['image_path'].replace('frames/', ''))
+                    for i in range(normal_start, normal_start + 9, 2)
+                ]
+                
+                if is_valid_clip(normal_clip):
+                    self.samples.append({
+                        'video_name': video_name,
+                        'clip_paths': normal_clip,
+                        'label': 0,
+                        'clip_type': 'video_start'
+                    })
+            elif (num_frames - 9) > anomaly_end:
+                normal_start = num_frames - 9
+
+                # Subsample normal clip by step of 2
+                normal_clip = [
+                    os.path.join(self.sequence_dir, frames_meta[i]['image_path'].replace('frames/', ''))
+                    for i in range(normal_start, normal_start + 9, 2)
+                ]
+                
+                if is_valid_clip(normal_clip):
+                    self.samples.append({
+                        'video_name': video_name,
+                        'clip_paths': normal_clip,
+                        'label': 0,
+                        'clip_type': 'video_end'
+                    })
 
         labels = [sample['label'] for sample in self.samples]
         labels_tensor = torch.tensor(labels, dtype=torch.int64)
         counts = torch.bincount(labels_tensor)
-        print('---------',counts[0].item(), counts[1].item(), '-------------')
+        print('---------', counts[0].item(), counts[1].item(), '-------------')
 
     def __len__(self):
         return len(self.samples)
@@ -125,7 +136,7 @@ class DoTAClipDataset(Dataset):
         return clip_tensor, torch.tensor(label, dtype=torch.float32)
 
 
-def get_dota_dataloaders(sequence_dir, annotation_dir, batch_size=8, num_workers=4, max_samples=2000):
+def get_dota_dataloaders(sequence_dir, annotation_dir, batch_size=8, num_workers=4, max_samples=None):
     """
     Initializes the dataset, splits it 80/20, empties target export directories, and returns Train/Val DataLoaders.
     """
@@ -164,34 +175,77 @@ def get_dota_dataloaders(sequence_dir, annotation_dir, batch_size=8, num_workers
     )
 
     # ----------------------------------------------------
-    # NEW: Empty target export directories before copying
+    # NEW: Randomly Select 100 indices for GIFs
+    # ----------------------------------------------------
+    good_indices = [i for i, sample in enumerate(full_dataset.samples) if sample["label"] == 0]
+    anomalous_indices = [i for i, sample in enumerate(full_dataset.samples) if sample["label"] == 1]
+    
+    # Sample up to 100 for each (using min to avoid errors if dataset is smaller)
+    sampled_good = random.sample(good_indices, min(100, len(good_indices)))
+    sampled_anomalous = random.sample(anomalous_indices, min(100, len(anomalous_indices)))
+    
+    # Use a set for O(1) lookup during the export loop
+    gif_eligible_indices = set(sampled_good + sampled_anomalous)
+    print(f"Selected {len(sampled_good)} good and {len(sampled_anomalous)} anomalous clips for GIF generation.")
+
+    # ----------------------------------------------------
+    # Setup Structural Root Folders
     # ----------------------------------------------------
     export_root_dir = "../DOTA_training"
     if os.path.exists(export_root_dir):
         print(f"Cleaning out old export directory: {export_root_dir}")
         shutil.rmtree(export_root_dir)
-    os.makedirs(export_root_dir, exist_ok=True)
+        
+    # Sub-directories setup
+    data_dir = os.path.join(export_root_dir, "data")
+    gif_dir = os.path.join(export_root_dir, "gifs")
+    
+    os.makedirs(data_dir, exist_ok=True)
+    os.makedirs(gif_dir, exist_ok=True)
 
-    def export_split(subset, split_name, export_root="../DOTA_training", extra_export_root=None):
+    def export_split(subset, split_name):
         for sample_idx in subset.indices:
             sample = full_dataset.samples[sample_idx]
             video_id = sample["video_name"]
-            class_name = "anamolous" if sample["label"] == 1 else "good"
-            target_dirs = [os.path.join(export_root, split_name, f"{video_id}_{class_name}")]
-            if extra_export_root is not None:
-                target_dirs.append(os.path.join(extra_export_root, split_name, f"{video_id}_{class_name}"))
+            class_name = "anomalous" if sample["label"] == 1 else "good"
+            
+            # Target dir for raw data split (e.g., ../DOTA_training/data/train/video123_good)
+            target_data_dir = os.path.join(data_dir, split_name, f"{video_id}_{class_name}")
+            os.makedirs(target_data_dir, exist_ok=True)
 
-            for target_dir in target_dirs:
-                os.makedirs(target_dir, exist_ok=True)
+            # Target dir for generated GIFs separated by class
+            target_gif_dir = os.path.join(gif_dir, class_name)
+            os.makedirs(target_gif_dir, exist_ok=True)
 
-                for frame_idx, src_path in enumerate(sample["clip_paths"]):
-                    _, ext = os.path.splitext(src_path)
-                    dst_path = os.path.join(target_dir, f"frame_{frame_idx:04d}{ext}")
-                    shutil.copy2(src_path, dst_path)
+            # Process frames for image copying and GIF generation
+            pil_frames = []
+            for frame_idx, src_path in enumerate(sample["clip_paths"]):
+                _, ext = os.path.splitext(src_path)
+                dst_path = os.path.join(target_data_dir, f"frame_{frame_idx:04d}{ext}")
+                shutil.copy2(src_path, dst_path)
+                
+                # ONLY load PIL objects into memory if this index was selected for a GIF
+                if sample_idx in gif_eligible_indices:
+                    pil_frames.append(Image.open(src_path))
+            
+            # Save the sequence array into a compiled .gif file (only if pil_frames has data)
+            if pil_frames:
+                pil_frames = pil_frames[:5]
+                assert len(pil_frames) == 5, f"Expected 5 frames, got {len(pil_frames)}"
+                
+                gif_path = os.path.join(target_gif_dir, f"{video_id}.gif")
+                # 200 ms duration per frame corresponds to 5 Hz output rate
+                # pil_frames[0].save(
+                #     gif_path,
+                #     save_all=True,
+                #     append_images=pil_frames[1:],
+                #     duration=200,
+                #     loop=0
+                # )
 
-    # Note: Passed export_root and extra_export_root pointing to the same folder as per original structure.
-    export_split(train_dataset, "train", export_root=export_root_dir, extra_export_root=export_root_dir)
-    export_split(val_dataset, "val", export_root=export_root_dir)
+    # Process and build files/folders
+    export_split(train_dataset, "train")
+    export_split(val_dataset, "val")
     
     # Initialize DataLoaders
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers)
