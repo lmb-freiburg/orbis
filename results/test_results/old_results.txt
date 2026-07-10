@@ -1,0 +1,129 @@
+
+
+result - 5th July
+
+Normal  raw score: 0.35472
+Anomaly raw score: 0.42444
+
+Per-t breakdown (t_grid = [0.1, 0.3, 0.5, 0.7, 0.9] ):
+  t=0.1: normal=0.69720  anomaly=0.75831
+  t=0.3: normal=0.40647  anomaly=0.50332
+  t=0.5: normal=0.26609  anomaly=0.36780
+  t=0.7: normal=0.18239  anomaly=0.27050
+  t=0.9: normal=0.22147  anomaly=0.22226
+
+
+################## DOTA DATASET ANALYSIS ###############################################
+
+python scripts/prepare_dota.py
+Found 4677 annotation files
+Processed 200 valid clips so far...
+Processed 400 valid clips so far...
+Processed 600 valid clips so far...
+Processed 800 valid clips so far...
+Processed 1000 valid clips so far...
+Processed 1200 valid clips so far...
+Processed 1400 valid clips so far...
+Processed 1600 valid clips so far...
+Processed 1800 valid clips so far...
+Processed 2000 valid clips so far...
+Processed 2200 valid clips so far...
+Processed 2400 valid clips so far...
+Processed 2600 valid clips so far...
+Processed 2800 valid clips so far...
+Processed 3000 valid clips so far...
+Processed 3200 valid clips so far...
+Processed 3400 valid clips so far...
+Processed 3600 valid clips so far...
+Processed 3800 valid clips so far...
+Processed 4000 valid clips so far...
+Processed 4200 valid clips so far...
+
+Done. Valid clips: 4329 (not exactly 4677)
+Skipped — ignore flag: 61, not enough pre-anomaly frames: 117, anomaly segment too short: 170, missing frame files: 0
+
+SPLIT - same ratio 3600:1000 -> 3300:1029 
+####################################################################################################################
+
+
+#################### TEST RUN ON 26 SAMPLE #########################################################
+
+SPLIT - same ratio 20:6 total= 26
+20 non-ood -> calibration (to find out the actual normal score)
+26 ood -> to find the ood score 
+6 held out non-odd -> valdiation
+
+
+Fit on 20 calib samples
+{
+  "0.1": {
+    "mean": 0.5647310949862003,
+    "std": 0.1724008841163593
+  },
+  "0.3": {
+    "mean": 0.32287688916549084,
+    "std": 0.1358976457725664
+  },
+  "0.5": {
+    "mean": 0.21148232268169523,
+    "std": 0.10166913673009195
+  },
+  "0.7": {
+    "mean": 0.14680512216873462,
+    "std": 0.07489530073338721
+  },
+  "0.9": {
+    "mean": 0.11172430902952324,
+    "std": 0.05985704357565159
+  },
+  "overall": {
+    "mean": 0.271523950714618,
+    "std": 0.10613035967632191
+  }
+}
+
+z-score!
+
+z = (this_clip's_score - normal_mean) / normal_std
+"how many standard-deviations away from typical-normal is this clip's score?"
+
+python scripts/evaluate_test.py
+                sample_id        split   label  score_mean  z_overall
+   Hd2IzHAfkCI_000799_ood     test_ood anomaly    0.230765  -0.384042
+   Nc9SDBksPPA_003735_ood     test_ood anomaly    0.501899   2.170678
+   4wKjxDXnmYs_003500_ood     test_ood anomaly    0.082001  -1.785759
+   0qfbmt4G8Rw_000602_ood     test_ood anomaly    0.520922   2.349923
+   ujVRDgGVzlQ_003036_ood     test_ood anomaly    0.246662  -0.234262
+   3u_CIo9IaWo_002793_ood     test_ood anomaly    0.163470  -1.018121
+   88LcRU7uEFE_003061_ood     test_ood anomaly    0.466528   1.837402
+   RPNiqsdt6-w_004905_ood     test_ood anomaly    0.499344   2.146605
+   P5MjgFmqouA_005382_ood     test_ood anomaly    0.449007   1.672316
+   EY8x-fyQkbk_002021_ood     test_ood anomaly    0.150855  -1.136990
+   PYL3JcSsS6o_002428_ood     test_ood anomaly    0.221907  -0.467509
+   Hx8FMhmdOQU_003521_ood     test_ood anomaly    0.125172  -1.378982
+   HzVbo46kkBA_000670_ood     test_ood anomaly    0.585778   2.961016
+   sUbP4j8rAic_005313_ood     test_ood anomaly    0.288024   0.155472
+   gXezhrOijmQ_004978_ood     test_ood anomaly    0.347568   0.716514
+   3sGShQb_HwU_001496_ood     test_ood anomaly    0.223693  -0.450683
+   RASKiMoxhOE_004705_ood     test_ood anomaly    0.410353   1.308099
+   UbDCiQVuzPY_000075_ood     test_ood anomaly    0.439482   1.582564
+   Z9K13eBUwJM_000332_ood     test_ood anomaly    0.233706  -0.356336
+   D_pyFV4nKd4_001164_ood     test_ood anomaly    0.233993  -0.353630
+lmykriTbncM_003407_nonood test_heldout  normal    0.342751   0.671126
+   lmykriTbncM_003407_ood     test_ood anomaly    0.273448   0.018126
+CyeT8rEQOpQ_001407_nonood test_heldout  normal    0.281005   0.089337
+   CyeT8rEQOpQ_001407_ood     test_ood anomaly    0.241059  -0.287050
+nvVk7L3GrJQ_000778_nonood test_heldout  normal    0.273716   0.020650
+   nvVk7L3GrJQ_000778_ood     test_ood anomaly    0.244669  -0.253034
+ieP36TLihGM_004687_nonood test_heldout  normal    0.304665   0.312263
+   ieP36TLihGM_004687_ood     test_ood anomaly    0.729611   4.316264
+90gyBengKDs_000676_nonood test_heldout  normal    0.316588   0.424610
+   90gyBengKDs_000676_ood     test_ood anomaly    0.526953   2.406744
+oZaUkhs_H-s_004362_nonood test_heldout  normal    0.104714  -1.571741
+   oZaUkhs_H-s_004362_ood     test_ood anomaly    0.084387  -1.763274
+
+AUROC (heldout-normal vs ood): 0.519
+
+Not that good? - because it means we cannot tell if by seeing a frame if it is anomalous or not?
+
+if I picked one random anomaly clip and one random normal clip, what's the probability my z-score correctly ranks the anomaly one as more surprising?
