@@ -1,0 +1,164 @@
+
+############# MEASURING RETROSPECTIVE SURPRISE IN ORBIS ###################
+
+- used 1500 samples (OOD + Non-00D)
+- 11 frames @ 10 fps -> 5 + 1 frame @5fps
+- 5 context frames and 1 target frame
+- SPLIT - same ratio 3600:1000 -> 1143 calib, 357 heldout samples, 1500 ood samples
+
+####### Objective #############
+
+The per-frame recipe
+
+Run Orbis with its context (encoded past frames) at time step k.
+The real next frame arrives. Encode it with the Orbis tokenizer into continuous latent tokens z*.
+Do exactly what training does, without weight updates: pick a random noise level t and random Gaussian noise x₀, mix them: x_t = t·z* + (1−t)·x₀.
+Feed x_t, t, and the context into the world model to get a predicted velocity.
+The correct velocity is known in closed form: (z* − x₀). Compute the squared difference between predicted and correct velocity.
+Repeat steps 3–5 for 4–8 different (t, x₀) pairs and average. That's the raw surprise score for frame k.
+
+No generation, no denoising loop — just a few extra forward passes per frame.
+
+Keep two extra views of the score:
+
+Per noise level t. Errors at low noise reflect fine detail (sensor noise, artifacts); errors at heavy noise reflect coarse scene layout — that's where semantic surprises show up.
+To make scores comparable across frames, use the same fixed set of t values (e.g., a small stratified grid) for every frame rather than fully random ones.
+Per latent token. Orbis's latents are spatial, so the error forms a map over the frame.
+A surprising object lights up its own region; a global condition shift (night, rain) raises the whole map. Localized spike = event; uniform rise = hard regime.
+
+########## Results ###############
+
+- used noise levels - [0.3, 0.5, 0.7, 0.9]
+- 3 random Gaussian noise for each noise level xO
+- 4*3 -> 12 pairs or 12 fwd passes for each sample
+- for each sample with a noise level score -> mean of all gaussians
+
+calibration stats for all calib samples: (how the normal looks like!)
+
+{
+  "0.3": {
+    "mean": 0.3320971433568684,
+    "std": 0.1133686356145302
+  },
+  "0.5": {
+    "mean": 0.22014211989737142,
+    "std": 0.09258099575769023
+  },
+  "0.7": {
+    "mean": 0.15557798320078797,
+    "std": 0.07362918456844934
+  },
+  "0.9": {
+    "mean": 0.11942382949797149,
+    "std": 0.0653030826132198
+  },
+  "overall": {
+    "mean": 0.2068102689405328,
+    "std": 0.08440587707182934
+  }
+}
+
+
+heldout-stats (sanity check) - pretty close to the normal
+
+z = (this_clip_score - calib_mean) / calib_std
+
+{
+  "count": 357,
+  "score_mean": {
+    "mean": 0.20737576540376917,
+    "std": 0.08919938998883728
+  },
+  "z_overall": {
+    "mean": 0.006699727742391964,
+    "std": 1.0567910969637542
+  }
+}
+
+ood-stats (how the ood samples look like?) - little high score but not very anomalous again
+
+
+{
+  "count": 1500,
+  "score_mean": {
+    "mean": 0.26150296692053476,
+    "std": 0.13373058456647718
+  },
+  "z_overall": {
+    "mean": 0.6479725511735751,
+    "std": 1.5843750857410286
+  }
+}
+
+
+if I randomly draw one normal and one anomaly clip, what fraction of the time does the anomaly clip's z-score come out higher?
+
+True Positive Rate (TPR) = (anomaly clips scoring above the threshold) / (total anomaly clips) — how many real anomalies you correctly catch
+False Positive Rate (FPR) = (normal clips scoring above the threshold) / (total normal clips) — how many normal clips you incorrectly flag
+
+AUROC (heldout vs normal) -> 0.6108
+
+some DoTA anomaly categories are barely surprising to the model at all
+
+
+Per-category AUROC (this category's anomalies vs all heldout-normal):
+  oncoming                  n= 139  AUROC=0.7489
+  leave_to_left             n=  92  AUROC=0.7446
+  leave_to_right            n= 124  AUROC=0.6531
+  obstacle                  n=  35  AUROC=0.6513
+  lateral                   n= 236  AUROC=0.6113
+  moving_ahead_or_waiting   n= 219  AUROC=0.5948
+  turning                   n= 557  AUROC=0.5771
+  unknown                   n=  34  AUROC=0.4939
+  start_stop_or_stationary  n=  31  AUROC=0.4438
+  pedestrian                n=  33  AUROC=0.4054
+
+
+conclusions
+
+stronger detection power for anomalies that disrupt coarse scene layout/trajectory (oncoming, obstacles)
+weaker power for anomalies that are localized-object or subtle-behavioral in nature (pedestrians, stationary events)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
