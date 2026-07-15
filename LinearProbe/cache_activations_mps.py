@@ -51,6 +51,7 @@ def cache_features(model, dataloader, device, save_path, checkpoint_interval=100
     
     all_features = []
     all_labels = []
+    all_ids = []
     
     # Setup paths for partial backups
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
@@ -60,16 +61,20 @@ def cache_features(model, dataloader, device, save_path, checkpoint_interval=100
     
     with torch.no_grad():
         # print ('------------',len(dataloader), '---', len(dataloader.dataset))
-        for i, (clips, labels) in enumerate(tqdm(dataloader)):
-            # print (labels, labels.shape)
-            clips = clips.to(device)
+        for i, batch_data in enumerate(tqdm(dataloader)):
+
+            clips = batch_data[0].to(device)
+            labels = batch_data[1]
+            clip_ids = batch_data[-1]
 
             if hasattr(model, "encode_frames") and hasattr(model, "vit"):
                 # DoTA clips arrive as [B, C, T, H, W]; the second-stage model expects [B, T, C, H, W].
                 clips = clips.permute(0, 2, 1, 3, 4).contiguous()
                 latents = model.encode_frames(clips)
                 context = latents[:, :-1].contiguous() if latents.size(1) > 1 else None
-                print('----------', context.shape, '----------')
+                # print('--------Context Shape --', context.shape, '----------')
+                #--------Context Shape -- torch.Size([8, 5, 32, 18, 32]) ----------
+
                 target = latents[:, -1:].contiguous()
                 
                 # MPS optimization: explicit float32 constraints prevent internal ops mismatch
@@ -85,21 +90,36 @@ def cache_features(model, dataloader, device, save_path, checkpoint_interval=100
             # 3. Retrieve the intercepted features from Block 10
             features = activation['block_18']
 
-            print('---------- Activations Shape - ', features.shape, '----------')
-            
+            # Capture only the last frame's latent
+            if features.dim() == 4:
+                # Extract only the last time step (index -1)
+                features = features[:, -1, :, :]
+
             # 4. Spatio-Temporal Pooling
+            #Mean Pooling
             # print ("Pooled features shape - ", features.shape)
+            #Pooled features shape -  torch.Size([8, 576, 768])
+
             # features = features.mean(dim=(1, 2)) if features.dim() == 4 else features.mean(dim=1)
+
+            #Max Pooling
+            #features = features.amax(dim=(1, 2)) if features.dim() == 4 else features.amax(dim=1)
+
+            #Attention Pooling
+            # No Pooling
+
             
             all_features.append(features.cpu())
             all_labels.append(labels.cpu())
+            all_ids.append(clip_ids)
 
             # 5. Incremental Caching checkpointing logic
             if (i + 1) % checkpoint_interval == 0:
                 temp_features = torch.cat(all_features, dim=0)
                 temp_labels = torch.cat(all_labels, dim=0)
-                torch.save({'features': temp_features, 'labels': temp_labels}, partial_save_path)
-                del temp_features, temp_labels  # Memory flush
+                temp_ids = torch.cat(all_ids, dim=0)
+                torch.save({'features': temp_features, 'labels': temp_labels, 'ids': temp_ids}, partial_save_path)
+                del temp_features, temp_labels, temp_ids  # Memory flush
 
     # Clean up the hook
     hook_handle.remove()
@@ -107,8 +127,9 @@ def cache_features(model, dataloader, device, save_path, checkpoint_interval=100
     # Concatenate and save absolute final output to disk
     tensor_features = torch.cat(all_features, dim=0)
     tensor_labels = torch.cat(all_labels, dim=0)
-    
-    torch.save({'features': tensor_features, 'labels': tensor_labels}, save_path)
+    tensor_ids = torch.cat(all_ids, dim=0)
+    #CHECK -1 : Also include IDs in the save path to retreive heatmaps later
+    torch.save({'features': tensor_features, 'labels': tensor_labels, 'ids': tensor_ids}, save_path)
     
     # Clean up partial file on complete run success
     if os.path.exists(partial_save_path):
@@ -150,7 +171,6 @@ if __name__ == "__main__":
         args.anno_dir,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
-
     )
 
     model = load_model_from_config(args.exp_dir, args.config, args.ckpt, device)

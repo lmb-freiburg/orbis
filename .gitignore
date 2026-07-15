@@ -9,3 +9,4 @@
 *.npy
 *.pt
 *DONTUSE*
+*wandb*
