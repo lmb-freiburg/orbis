@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset, DataLoader, random_split # Added random_split
 from sklearn.metrics import accuracy_score, precision_score, recall_score, roc_auc_score, confusion_matrix
 import wandb # Added Weights & Biases
 
@@ -11,47 +11,80 @@ class CachedFeatureDataset(Dataset):
         data = torch.load(cache_path)
         self.features = data['features']
         self.labels = data['labels'].long() 
-        print(f'Loaded {cache_path} | Shape - {self.features.shape}')
+        # If you saved IDs, you can also load self.ids = data['ids'] here
+        print(f'Loaded {cache_path} | Shape - {self.features.shape} , {self.labels.shape}')
         
     def __len__(self):
         return len(self.features)
 
     def __getitem__(self, idx):
+        # Add self.ids[idx] here if you added IDs to your caching script!
         return self.features[idx], self.labels[idx]
 
-class LinearProbe(nn.Module):
-    def __init__(self, input_dim, num_classes=2):
+class AttentionProbe(nn.Module):
+    def __init__(self, input_dim, num_classes=2, num_heads=8):
         super().__init__()
+        # 1. Learnable query token (Think of this as the "Detective")
+        self.query = nn.Parameter(torch.randn(1, 1, input_dim))
+        
+        # 2. Multi-head Attention Layer
+        self.attn = nn.MultiheadAttention(embed_dim=input_dim, num_heads=num_heads, batch_first=True)
+        
+        # 3. Final linear classifier
         self.classifier = nn.Linear(input_dim, num_classes)
-        self.norm = nn.LayerNorm(input_dim)
 
     def forward(self, x):
-        return self.classifier(self.norm(x))
+        # x is your unpooled cached features. Shape: [Batch, 576, 768]
+        B = x.size(0)
+        
+        # Expand our single query token to match the batch size
+        q = self.query.expand(B, -1, -1)
+        
+        # Cross-Attention
+        attn_out, attn_weights = self.attn(query=q, key=x, value=x)
+        
+        # Squeeze out the sequence dimension: [Batch, 1, 768] -> [Batch, 768]
+        pooled_features = attn_out.squeeze(1)
+        
+        # Pass the attended features into the final classifier
+        logits = self.classifier(pooled_features)
+        
+        return logits
 
 def train_linear_probe():
     # 1. Initialize W&B run (Config is populated by the Sweep agent)
     wandb.init()
     config = wandb.config
     
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
+    print(f"Using device: {device}")
     
-    # 2. Load Cached Data
-    train_dataset = CachedFeatureDataset("./cached_features/train_block18.pt")
-    val_dataset = CachedFeatureDataset("./cached_features/val_block18.pt")
+    # 2. Load the Single Partial Cached Data
+    full_dataset = CachedFeatureDataset("./cached_features/train_block18_unpooled_partial.pt")
 
-    train_loader = DataLoader(train_dataset, batch_size=config.batch_size, shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=config.batch_size, shuffle=False)
+    # 3. Perform 80/20 Split
+    total_size = len(full_dataset)
+    train_size = int(0.8 * total_size)
+    val_size = total_size - train_size
     
-    # 3. Initialize Probe
+    # Use a fixed generator seed so the split is identical across all sweep runs
+    train_dataset, val_dataset = random_split(
+        full_dataset, 
+        [train_size, val_size],
+        generator=torch.Generator().manual_seed(42)
+    )
 
-    # Maxpooling
+    print(f'------- Train Split Size: {train_size} | Val Split Size: {val_size} ---------')
+    
+    # Drop last to avoid batch size mismatch issues in edge cases
+    # train_loader = DataLoader(train_dataset, batch_size=config.batch_size, shuffle=True, drop_last=True)
+    # val_loader = DataLoader(val_dataset, batch_size=config.batch_size, shuffle=False)
+    train_loader = DataLoader(train_dataset, batch_size=64, shuffle=True, drop_last=True)
+    val_loader = DataLoader(val_dataset, batch_size=64, shuffle=False)
+    
+    # 4. Initialize Attention Probe
     hidden_dim = 768 
-
-    # UnPooled - Using the flat dimension from your previous setup
-    # hidden_dim = 576 * 768 
-
-
-    model = LinearProbe(input_dim=hidden_dim).to(device)
+    model = AttentionProbe(input_dim=hidden_dim, num_heads=8).to(device)
     
     criterion = nn.CrossEntropyLoss()
     
@@ -67,25 +100,18 @@ def train_linear_probe():
     best_val_loss = float('inf')
     patience = config.early_stopping_patience
     patience_counter = 0
-    epochs = 50 # Max epochs, but early stopping will likely cut this short
+    epochs = 50 # Max epochs, but early stopping handles halting
     
-    # 4. Training Loop
+    # 5. Training Loop
     for epoch in range(epochs):
         model.train()
         total_train_loss = 0
         correct = 0
         total = 0
         
-        for idx, (features, labels) in enumerate(train_loader):
+        for idx, (features, labels, *_) in enumerate(train_loader):
             features, labels = features.to(device), labels.to(device)
             
-            # Flattening the activation
-            B, H, W = features.shape
-            #UnPooled
-            # features = features.reshape(B, H*W)
-            #Maxpooled
-            features = torch.max(features, dim=1)[0]
-
             optimizer.zero_grad()
             outputs = model(features)
             loss = criterion(outputs, labels)
@@ -100,7 +126,7 @@ def train_linear_probe():
         avg_train_loss = total_train_loss / len(train_loader)
         train_acc = 100. * correct / total
         
-        # 5. Validation Loop
+        # 6. Validation Loop
         model.eval()
         total_val_loss = 0
         
@@ -109,17 +135,8 @@ def train_linear_probe():
         all_val_probs = []
 
         with torch.no_grad():
-            for features, labels in val_loader:
+            for features, labels, *_ in val_loader:
                 features, labels = features.to(device), labels.to(device)
-
-                # Flattening the activation
-                B, H, W = features.shape
-                #Unpooled
-                # features = features.reshape(B, H*W)
-                #Maxpooled
-                features = torch.max(features, dim=1)[0]
-
-
                 outputs = model(features)
                 
                 # Calculate Validation Loss for Early Stopping
@@ -133,7 +150,7 @@ def train_linear_probe():
                 all_val_preds.extend(predicted.cpu().numpy())
                 all_val_probs.extend(probs.cpu().numpy())
                 
-        # 6. Calculate Metrics
+        # 7. Calculate Metrics
         avg_val_loss = total_val_loss / len(val_loader)
         val_acc = accuracy_score(all_val_labels, all_val_preds) * 100
         val_precision = precision_score(all_val_labels, all_val_preds, zero_division=0) * 100
@@ -146,7 +163,7 @@ def train_linear_probe():
             
         cm = confusion_matrix(all_val_labels, all_val_preds)
         
-        # 7. Print and Log to W&B
+        # 8. Print and Log to W&B
         print(f"\nEpoch {epoch+1}/{epochs} | Train Loss: {avg_train_loss:.4f} | Val Loss: {avg_val_loss:.4f}")
         print(f"--> Train Acc: {train_acc:.2f}% | Val Acc: {val_acc:.2f}% | AUC: {val_auc:.4f}")
         
@@ -161,11 +178,11 @@ def train_linear_probe():
             "val_auc": val_auc
         })
 
-        # 8. Early Stopping Logic
+        # 9. Early Stopping Logic
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
             patience_counter = 0
-            # Optional: torch.save(model.state_dict(), "best_model.pt")
+            # Optional: torch.save(model.state_dict(), "best_attention_probe.pt")
         else:
             patience_counter += 1
             print(f"Early Stopping Counter: {patience_counter} / {patience}")
@@ -176,12 +193,13 @@ def train_linear_probe():
 if __name__ == "__main__":
     # Define the Hyperparameter Sweep Configuration
     sweep_config = {
-        'method': 'bayes', # Bayesian optimization (finds the best params faster than random)
+        'method': 'bayes', # Bayesian optimization 
         'metric': {
             'name': 'val_loss',
             'goal': 'minimize'   
         },
         'parameters': {
+            # 'batch_size': {'values':[16,32,64,128]},
             'learning_rate': {
                 'distribution': 'log_uniform_values',
                 'min': 1e-6,
@@ -191,9 +209,6 @@ if __name__ == "__main__":
                 'distribution': 'uniform',
                 'min': 0.0,
                 'max': 0.1
-            },
-            'batch_size': {
-                'values': [16, 32, 64]
             },
             'beta1': {
                 'values': [0.9, 0.95]
@@ -208,7 +223,7 @@ if __name__ == "__main__":
     }
 
     # Initialize the sweep
-    sweep_id = wandb.sweep(sweep_config, project="orbis-linear-maxpool-probe")
+    sweep_id = wandb.sweep(sweep_config, project="orbis_attention_probe_40_data")
 
     # Run the sweep agent (this will run train_linear_probe 20 times with different parameters)
     wandb.agent(sweep_id, function=train_linear_probe, count=20)

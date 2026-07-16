@@ -1,17 +1,41 @@
+import os
+import argparse
+import sys
+from pathlib import Path
+
 import torch
 import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 from sklearn.metrics import accuracy_score, precision_score, recall_score, roc_auc_score, confusion_matrix
-import wandb # Added Weights & Biases
+import wandb
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.append(str(PROJECT_ROOT))
+
 
 class CachedFeatureDataset(Dataset):
     def __init__(self, cache_path):
-        data = torch.load(cache_path)
-        self.features = data['features']
+        if not os.path.exists(cache_path):
+            raise FileNotFoundError(f"Target embedding cache not found at: {cache_path}")
+            
+        data = torch.load(cache_path, map_location="cpu")
+        features = data['features']           # Raw Cache Shape: [Batch, 32, 18, 32]
         self.labels = data['labels'].long() 
-        print(f'Loaded {cache_path} | Shape - {self.features.shape}')
+        
+        # --- Spatial-Temporal Restructuring ---
+        # 1. Permute the [-3] channel dimension to the trailing position: [B, 32, 18, 32] -> [B, 18, 32, 32]
+        features = features.permute(0, 2, 3, 1)
+        
+        # 2. Flatten intermediate spatial dimensions: [B, 18, 32, 32] -> [B, 576, 32]
+        self.features = features.reshape(features.size(0), 576, 32)
+        
+        if self.labels.dim() > 1:
+            self.labels = self.labels.squeeze()
+            
+        print(f'Loaded {cache_path} | Restructured Shape - Features: {self.features.shape} | Labels: {self.labels.shape}')
         
     def __len__(self):
         return len(self.features)
@@ -19,37 +43,34 @@ class CachedFeatureDataset(Dataset):
     def __getitem__(self, idx):
         return self.features[idx], self.labels[idx]
 
+
 class LinearProbe(nn.Module):
     def __init__(self, input_dim, num_classes=2):
         super().__init__()
-        self.classifier = nn.Linear(input_dim, num_classes)
         self.norm = nn.LayerNorm(input_dim)
+        self.classifier = nn.Linear(input_dim, num_classes)
 
     def forward(self, x):
         return self.classifier(self.norm(x))
+
 
 def train_linear_probe():
     # 1. Initialize W&B run (Config is populated by the Sweep agent)
     wandb.init()
     config = wandb.config
     
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
+    print(f"Using device: {device}")
     
-    # 2. Load Cached Data
-    train_dataset = CachedFeatureDataset("./cached_features/train_block18.pt")
-    val_dataset = CachedFeatureDataset("./cached_features/val_block18.pt")
+    # 2. Load Cached Data (Pointing to unpooled combined embeddings)
+    train_dataset = CachedFeatureDataset("./cached_features/train_unpooled_embeddings.pt")
+    val_dataset = CachedFeatureDataset("./cached_features/val_unpooled_embeddings.pt")
 
     train_loader = DataLoader(train_dataset, batch_size=config.batch_size, shuffle=True)
     val_loader = DataLoader(val_dataset, batch_size=config.batch_size, shuffle=False)
     
-    # 3. Initialize Probe
-
-    # Maxpooling
-    hidden_dim = 768 
-
-    # UnPooled - Using the flat dimension from your previous setup
-    # hidden_dim = 576 * 768 
-
+    # 3. Initialize Probe with target Embedding Dimension
+    hidden_dim = 32 
 
     model = LinearProbe(input_dim=hidden_dim).to(device)
     
@@ -67,7 +88,7 @@ def train_linear_probe():
     best_val_loss = float('inf')
     patience = config.early_stopping_patience
     patience_counter = 0
-    epochs = 50 # Max epochs, but early stopping will likely cut this short
+    epochs = 50 
     
     # 4. Training Loop
     for epoch in range(epochs):
@@ -79,15 +100,12 @@ def train_linear_probe():
         for idx, (features, labels) in enumerate(train_loader):
             features, labels = features.to(device), labels.to(device)
             
-            # Flattening the activation
-            B, H, W = features.shape
-            #UnPooled
-            # features = features.reshape(B, H*W)
-            #Maxpooled
-            features = torch.max(features, dim=1)[0]
+            # Global Max Pooling along the spatial sequence dimension of 576 (dim=1)
+            # torch.max returns a namedtuple (values, indices). We grab the values [0].
+            pooled_features = torch.max(features, dim=1)[0]  # Shape: [Batch, 32]
 
             optimizer.zero_grad()
-            outputs = model(features)
+            outputs = model(pooled_features)
             loss = criterion(outputs, labels)
             loss.backward()
             optimizer.step()
@@ -112,17 +130,11 @@ def train_linear_probe():
             for features, labels in val_loader:
                 features, labels = features.to(device), labels.to(device)
 
-                # Flattening the activation
-                B, H, W = features.shape
-                #Unpooled
-                # features = features.reshape(B, H*W)
-                #Maxpooled
-                features = torch.max(features, dim=1)[0]
+                # Global Max Pooling along the sequence dimension of 576 (dim=1)
+                pooled_features = torch.max(features, dim=1)[0]  # Shape: [Batch, 32]
 
-
-                outputs = model(features)
+                outputs = model(pooled_features)
                 
-                # Calculate Validation Loss for Early Stopping
                 val_loss = criterion(outputs, labels)
                 total_val_loss += val_loss.item()
                 
@@ -144,8 +156,6 @@ def train_linear_probe():
         except ValueError:
             val_auc = float('nan')
             
-        cm = confusion_matrix(all_val_labels, all_val_preds)
-        
         # 7. Print and Log to W&B
         print(f"\nEpoch {epoch+1}/{epochs} | Train Loss: {avg_train_loss:.4f} | Val Loss: {avg_val_loss:.4f}")
         print(f"--> Train Acc: {train_acc:.2f}% | Val Acc: {val_acc:.2f}% | AUC: {val_auc:.4f}")
@@ -165,18 +175,17 @@ def train_linear_probe():
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
             patience_counter = 0
-            # Optional: torch.save(model.state_dict(), "best_model.pt")
         else:
             patience_counter += 1
             print(f"Early Stopping Counter: {patience_counter} / {patience}")
             if patience_counter >= patience:
                 print("Early stopping triggered. Halting training.")
-                break # Exit the epoch loop
+                break 
 
 if __name__ == "__main__":
     # Define the Hyperparameter Sweep Configuration
     sweep_config = {
-        'method': 'bayes', # Bayesian optimization (finds the best params faster than random)
+        'method': 'bayes', 
         'metric': {
             'name': 'val_loss',
             'goal': 'minimize'   
@@ -208,7 +217,7 @@ if __name__ == "__main__":
     }
 
     # Initialize the sweep
-    sweep_id = wandb.sweep(sweep_config, project="orbis-linear-maxpool-probe")
+    sweep_id = wandb.sweep(sweep_config, project="orbis-encoder-linear-maxpool-probe")
 
-    # Run the sweep agent (this will run train_linear_probe 20 times with different parameters)
+    # Run the sweep agent (20 iterations)
     wandb.agent(sweep_id, function=train_linear_probe, count=20)

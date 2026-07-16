@@ -214,7 +214,7 @@ class DoTAClipDataset(Dataset):
         
         # Create a unique ID string for this specific clip
         clip_id = f"{sample['video_name']}_{sample['clip_type']}"
-        
+
         frames = []
         for img_path in clip_paths:
             img = Image.open(img_path).convert('RGB')

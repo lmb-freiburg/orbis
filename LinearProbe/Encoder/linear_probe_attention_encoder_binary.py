@@ -1,61 +1,116 @@
+import os
+import argparse
+import sys
+from pathlib import Path
+
 import torch
 import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 from sklearn.metrics import accuracy_score, precision_score, recall_score, roc_auc_score, confusion_matrix
-import wandb # Added Weights & Biases
+import wandb
+
+# Fix paths to recognize sister modules if executing from nested directories
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.append(str(PROJECT_ROOT))
+
 
 class CachedFeatureDataset(Dataset):
     def __init__(self, cache_path):
-        data = torch.load(cache_path)
-        self.features = data['features']
+        if not os.path.exists(cache_path):
+            raise FileNotFoundError(f"Target embedding cache not found at: {cache_path}")
+            
+        data = torch.load(cache_path, map_location="cpu")
+        features = data['features']  # Input shape: [Batch, 32, 18, 32]
         self.labels = data['labels'].long() 
-        print(f'Loaded {cache_path} | Shape - {self.features.shape}')
+        self.ids = data['ids']
+        
+        # --- Spatial-Temporal Restructuring ---
+        # 1. Permute the [-3] channel dimension to the trailing position
+        # [B, 32, 18, 32] -> [B, 18, 32, 32]
+        features = features.permute(0, 2, 3, 1)
+        
+        # 2. Flatten spatial dimensions to generate the sequence length
+        # [B, 18, 32, 32] -> [B, 576, 32]
+        self.features = features.reshape(features.size(0), 576, 32)
+        
+        if self.labels.dim() > 1:
+            self.labels = self.labels.squeeze()
+            
+        print(f'Loaded {cache_path} | Restructured Shape - Features: {self.features.shape} , Labels: {self.labels.shape}')
         
     def __len__(self):
         return len(self.features)
 
     def __getitem__(self, idx):
-        return self.features[idx], self.labels[idx]
+        return self.features[idx], self.labels[idx], self.ids[idx]
 
-class LinearProbe(nn.Module):
-    def __init__(self, input_dim, num_classes=2):
+
+class AttentionProbe(nn.Module):
+    def __init__(self, input_dim, num_classes=2, num_heads=4):
         super().__init__()
+        # 1. Learnable query token acting as the context summarizer
+        self.query = nn.Parameter(torch.randn(1, 1, input_dim))
+        
+        # 2. Multi-head Cross Attention Layer
+        self.attn = nn.MultiheadAttention(embed_dim=input_dim, num_heads=num_heads, batch_first=True)
+        
+        # 3. Classifier mapping contextual features to class space
         self.classifier = nn.Linear(input_dim, num_classes)
-        self.norm = nn.LayerNorm(input_dim)
+
+        self.norm1 = nn.LayerNorm(input_dim)
+        self.norm2 = nn.LayerNorm(input_dim)
 
     def forward(self, x):
-        return self.classifier(self.norm(x))
+        # x expected shape: [Batch, 576, 32]
+        B = x.size(0)
+        
+        # Norm 1
+        x = self.norm1(x)
+
+        # Expand query token across the batch size
+        q = self.query.expand(B, -1, -1)
+        
+        # Perform cross-attention pooling over the sequential tokens
+        attn_out, attn_weights = self.attn(query=q, key=x, value=x)
+        
+        # Compress sequence dimension: [Batch, 1, 32] -> [Batch, 32]
+        pooled_features = attn_out.squeeze(1)
+
+        # Norm 2
+        pooled_features = self.norm2(pooled_features)
+        
+        # Logit classification output
+        logits = self.classifier(pooled_features)
+        return logits
+
 
 def train_linear_probe():
-    # 1. Initialize W&B run (Config is populated by the Sweep agent)
+    # 1. Initialize W&B run (Config populated dynamically by the Sweep Agent)
     wandb.init()
     config = wandb.config
     
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
+    print(f"Using device: {device}")
     
-    # 2. Load Cached Data
-    train_dataset = CachedFeatureDataset("./cached_features/train_block18.pt")
-    val_dataset = CachedFeatureDataset("./cached_features/val_block18.pt")
+    # 2. Load the restructured datasets from the caching directory
+    cache_dir = getattr(config, "cache_dir", "./cached_features")
+    train_dataset = CachedFeatureDataset(os.path.join(cache_dir, "train_unpooled_embeddings.pt"))
+    val_dataset = CachedFeatureDataset(os.path.join(cache_dir, "val_unpooled_embeddings.pt"))
 
-    train_loader = DataLoader(train_dataset, batch_size=config.batch_size, shuffle=True)
+    print(f'------- Train: {len(train_dataset)} | Val: {len(val_dataset)} ---------')
+    
+    train_loader = DataLoader(train_dataset, batch_size=config.batch_size, shuffle=True, drop_last=True)
     val_loader = DataLoader(val_dataset, batch_size=config.batch_size, shuffle=False)
     
-    # 3. Initialize Probe
-
-    # Maxpooling
-    hidden_dim = 768 
-
-    # UnPooled - Using the flat dimension from your previous setup
-    # hidden_dim = 576 * 768 
-
-
-    model = LinearProbe(input_dim=hidden_dim).to(device)
+    # 3. Initialize Attention Probe with embed_dim=32
+    # Setting num_heads=4 because embed_dim must be divisible by num_heads (32 % 4 == 0)
+    model = AttentionProbe(input_dim=32, num_heads=4).to(device)
     
     criterion = nn.CrossEntropyLoss()
     
-    # Use HPO configs for AdamW
     optimizer = optim.AdamW(
         model.parameters(), 
         lr=config.learning_rate, 
@@ -67,7 +122,7 @@ def train_linear_probe():
     best_val_loss = float('inf')
     patience = config.early_stopping_patience
     patience_counter = 0
-    epochs = 50 # Max epochs, but early stopping will likely cut this short
+    epochs = 50 
     
     # 4. Training Loop
     for epoch in range(epochs):
@@ -76,16 +131,9 @@ def train_linear_probe():
         correct = 0
         total = 0
         
-        for idx, (features, labels) in enumerate(train_loader):
+        for idx, (features, labels, _) in enumerate(train_loader):
             features, labels = features.to(device), labels.to(device)
             
-            # Flattening the activation
-            B, H, W = features.shape
-            #UnPooled
-            # features = features.reshape(B, H*W)
-            #Maxpooled
-            features = torch.max(features, dim=1)[0]
-
             optimizer.zero_grad()
             outputs = model(features)
             loss = criterion(outputs, labels)
@@ -109,20 +157,10 @@ def train_linear_probe():
         all_val_probs = []
 
         with torch.no_grad():
-            for features, labels in val_loader:
+            for features, labels, _ in val_loader:
                 features, labels = features.to(device), labels.to(device)
-
-                # Flattening the activation
-                B, H, W = features.shape
-                #Unpooled
-                # features = features.reshape(B, H*W)
-                #Maxpooled
-                features = torch.max(features, dim=1)[0]
-
-
                 outputs = model(features)
                 
-                # Calculate Validation Loss for Early Stopping
                 val_loss = criterion(outputs, labels)
                 total_val_loss += val_loss.item()
                 
@@ -133,7 +171,7 @@ def train_linear_probe():
                 all_val_preds.extend(predicted.cpu().numpy())
                 all_val_probs.extend(probs.cpu().numpy())
                 
-        # 6. Calculate Metrics
+        # 6. Metrics Calculations
         avg_val_loss = total_val_loss / len(val_loader)
         val_acc = accuracy_score(all_val_labels, all_val_preds) * 100
         val_precision = precision_score(all_val_labels, all_val_preds, zero_division=0) * 100
@@ -146,7 +184,7 @@ def train_linear_probe():
             
         cm = confusion_matrix(all_val_labels, all_val_preds)
         
-        # 7. Print and Log to W&B
+        # 7. Reporting & Logging
         print(f"\nEpoch {epoch+1}/{epochs} | Train Loss: {avg_train_loss:.4f} | Val Loss: {avg_val_loss:.4f}")
         print(f"--> Train Acc: {train_acc:.2f}% | Val Acc: {val_acc:.2f}% | AUC: {val_auc:.4f}")
         
@@ -161,22 +199,22 @@ def train_linear_probe():
             "val_auc": val_auc
         })
 
-        # 8. Early Stopping Logic
+        # 8. Early Stopping Check
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
             patience_counter = 0
-            # Optional: torch.save(model.state_dict(), "best_model.pt")
         else:
             patience_counter += 1
             print(f"Early Stopping Counter: {patience_counter} / {patience}")
             if patience_counter >= patience:
                 print("Early stopping triggered. Halting training.")
-                break # Exit the epoch loop
+                break
+
 
 if __name__ == "__main__":
-    # Define the Hyperparameter Sweep Configuration
+    # Define the Hyperparameter Sweep Configuration matching encoder parameters
     sweep_config = {
-        'method': 'bayes', # Bayesian optimization (finds the best params faster than random)
+        'method': 'bayes', # Bayesian optimization 
         'metric': {
             'name': 'val_loss',
             'goal': 'minimize'   
@@ -203,12 +241,15 @@ if __name__ == "__main__":
             },
             'early_stopping_patience': {
                 'value': 5
+            },
+            'cache_dir': {
+                'value': './cached_features'
             }
         }
     }
 
-    # Initialize the sweep
-    sweep_id = wandb.sweep(sweep_config, project="orbis-linear-maxpool-probe")
+    # Initialize W&B Sweep
+    sweep_id = wandb.sweep(sweep_config, project="orbis-encoder-attention-probe")
 
-    # Run the sweep agent (this will run train_linear_probe 20 times with different parameters)
+    # Launch sweep agent
     wandb.agent(sweep_id, function=train_linear_probe, count=20)

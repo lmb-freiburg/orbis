@@ -31,7 +31,7 @@ def load_model_from_config(exp_dir, config_path, ckpt_path, device):
     return model.to(device).eval()
 
 
-def cache_features(model, dataloader, device, save_path, checkpoint_interval=100):
+def cache_features(model, dataloader, device, save_dir, split_name, checkpoint_interval=100):
     model.eval()
     
     backbone = getattr(model, "vit", model)
@@ -45,22 +45,28 @@ def cache_features(model, dataloader, device, save_path, checkpoint_interval=100
             activation[name] = output[0] if isinstance(output, tuple) else output
         return hook
 
-    # 2. Register the hook to the 20th block (index 19)
-    # hook_handle = backbone.blocks[19].register_forward_hook(get_activation('block_20'))
-    hook_handle = backbone.blocks[17].register_forward_hook(get_activation('block_18'))
+    # 2. Register hooks for multiple blocks (Index = Block Number - 1)
+    target_blocks = {
+        'block6': 5,
+        'block12': 11,
+        'block18': 17,
+        'block24': 23
+    }
     
-    all_features = []
+    hook_handles = []
+    for name, idx in target_blocks.items():
+        handle = backbone.blocks[idx].register_forward_hook(get_activation(name))
+        hook_handles.append(handle)
+    
+    # Initialize storage dictionaries
+    all_features = {name: [] for name in target_blocks.keys()}
     all_labels = []
     all_ids = []
     
-    # Setup paths for partial backups
-    os.makedirs(os.path.dirname(save_path), exist_ok=True)
-    partial_save_path = save_path.replace(".pt", "_partial.pt")
-
-    print(f"Extracting features to {save_path} (saving backups every {checkpoint_interval} batches)...")
+    os.makedirs(save_dir, exist_ok=True)
+    print(f"Extracting features for '{split_name}' split (saving backups every {checkpoint_interval} batches)...")
     
     with torch.no_grad():
-        # print ('------------',len(dataloader), '---', len(dataloader.dataset))
         for i, batch_data in enumerate(tqdm(dataloader)):
 
             clips = batch_data[0].to(device)
@@ -68,16 +74,11 @@ def cache_features(model, dataloader, device, save_path, checkpoint_interval=100
             clip_ids = batch_data[-1]
 
             if hasattr(model, "encode_frames") and hasattr(model, "vit"):
-                # DoTA clips arrive as [B, C, T, H, W]; the second-stage model expects [B, T, C, H, W].
                 clips = clips.permute(0, 2, 1, 3, 4).contiguous()
                 latents = model.encode_frames(clips)
                 context = latents[:, :-1].contiguous() if latents.size(1) > 1 else None
-                # print('--------Context Shape --', context.shape, '----------')
-                #--------Context Shape -- torch.Size([8, 5, 32, 18, 32]) ----------
-
                 target = latents[:, -1:].contiguous()
                 
-                # MPS optimization: explicit float32 constraints prevent internal ops mismatch
                 t = torch.zeros(clips.shape[0], dtype=torch.float32, device=device)
                 frame_rate = torch.full((clips.shape[0],), 5.0, dtype=torch.float32, device=device)
                 _ = model.vit(target, context, t, frame_rate=frame_rate)
@@ -85,57 +86,55 @@ def cache_features(model, dataloader, device, save_path, checkpoint_interval=100
                 t = torch.zeros(clips.shape[0], dtype=torch.float32, device=device)
                 _ = model(clips, t)
             
-            # # 3. Retrieve the intercepted features from Block 20
-            # features = activation['block_20']
-            # 3. Retrieve the intercepted features from Block 10
-            features = activation['block_18']
+            # 3. Retrieve and process intercepted features for ALL hooked blocks
+            for name in target_blocks.keys():
+                features = activation[name]
 
-            # Capture only the last frame's latent
-            if features.dim() == 4:
-                # Extract only the last time step (index -1)
-                features = features[:, -1, :, :]
+                # Capture only the last frame's latent (Skip pooling)
+                if features.dim() == 4:
+                    features = features[:, -1, :, :]
+                
+                all_features[name].append(features.cpu())
 
-            # 4. Spatio-Temporal Pooling
-            #Mean Pooling
-            # print ("Pooled features shape - ", features.shape)
-            #Pooled features shape -  torch.Size([8, 576, 768])
-
-            # features = features.mean(dim=(1, 2)) if features.dim() == 4 else features.mean(dim=1)
-
-            #Max Pooling
-            #features = features.amax(dim=(1, 2)) if features.dim() == 4 else features.amax(dim=1)
-
-            #Attention Pooling
-            # No Pooling
-
-            
-            all_features.append(features.cpu())
             all_labels.append(labels.cpu())
-            all_ids.append(clip_ids)
+            
+            all_ids.extend(clip_ids)
 
-            # 5. Incremental Caching checkpointing logic
+            # 4. Incremental Caching checkpointing logic
             if (i + 1) % checkpoint_interval == 0:
-                temp_features = torch.cat(all_features, dim=0)
                 temp_labels = torch.cat(all_labels, dim=0)
-                temp_ids = torch.cat(all_ids, dim=0)
-                torch.save({'features': temp_features, 'labels': temp_labels, 'ids': temp_ids}, partial_save_path)
-                del temp_features, temp_labels, temp_ids  # Memory flush
+                
+                for name in target_blocks.keys():
+                    partial_save_path = os.path.join(save_dir, f"{split_name}_{name}_unpooled_partial.pt")
+                    temp_features = torch.cat(all_features[name], dim=0)
+                    
+                    # Strings cannot be torch.cat'ed, we just pass the flat list directly
+                    torch.save({'features': temp_features, 'labels': temp_labels, 'ids': all_ids}, partial_save_path)
+                    del temp_features
+                
+                del temp_labels  # Memory flush
 
-    # Clean up the hook
-    hook_handle.remove()
+    # Clean up all hooks
+    for handle in hook_handles:
+        handle.remove()
     
-    # Concatenate and save absolute final output to disk
-    tensor_features = torch.cat(all_features, dim=0)
+    # Concatenate final labels
     tensor_labels = torch.cat(all_labels, dim=0)
-    tensor_ids = torch.cat(all_ids, dim=0)
-    #CHECK -1 : Also include IDs in the save path to retreive heatmaps later
-    torch.save({'features': tensor_features, 'labels': tensor_labels, 'ids': tensor_ids}, save_path)
     
-    # Clean up partial file on complete run success
-    if os.path.exists(partial_save_path):
-        os.remove(partial_save_path)
+    # 5. Concatenate and save absolute final outputs for each block
+    for name in target_blocks.keys():
+        final_save_path = os.path.join(save_dir, f"{split_name}_{name}_unpooled.pt")
+        partial_save_path = os.path.join(save_dir, f"{split_name}_{name}_unpooled_partial.pt")
         
-    print(f"Saved completed dataset: {tensor_features.shape[0]} clips with dimension {tensor_features.shape[1]}")
+        tensor_features = torch.cat(all_features[name], dim=0)
+        
+        torch.save({'features': tensor_features, 'labels': tensor_labels, 'ids': all_ids}, final_save_path)
+        
+        # Clean up partial file on complete run success
+        if os.path.exists(partial_save_path):
+            os.remove(partial_save_path)
+            
+        print(f"Saved completed dataset to {final_save_path}: {tensor_features.shape[0]} clips with dimension {tensor_features.shape[1:]}")
 
 
 def parse_args():
@@ -155,7 +154,6 @@ def parse_args():
 if __name__ == "__main__":
     args = parse_args()
     
-    # Target MPS for local Apple Silicon M4 Pro, default back seamlessly to CUDA/CPU 
     if torch.backends.mps.is_available():
         device = torch.device("mps")
         print("Using Apple Silicon Hardware Acceleration Backend: MPS")
@@ -175,19 +173,21 @@ if __name__ == "__main__":
 
     model = load_model_from_config(args.exp_dir, args.config, args.ckpt, device)
 
+    # Note: We now pass save_dir and split_name separately
     cache_features(
         model, 
         train_loader, 
         device, 
-        # os.path.join(args.save_dir, "train_block20.pt"),
-        os.path.join(args.save_dir, "train_block18.pt"),
+        save_dir=args.save_dir,
+        split_name="train",
         checkpoint_interval=args.checkpoint_interval
     )
+    
     cache_features(
         model, 
         val_loader, 
         device, 
-        # os.path.join(args.save_dir, "val_block20.pt"),
-        os.path.join(args.save_dir, "val_block18.pt"),
+        save_dir=args.save_dir,
+        split_name="val",
         checkpoint_interval=args.checkpoint_interval
     )
