@@ -121,17 +121,23 @@ weaker power for anomalies that are localized-object or subtle-behavioral in nat
 
 
 
+Done. Valid clips: 4329 (not exactly 4677)
+Skipped — ignore flag: 61, not enough pre-anomaly frames: 117, anomaly segment too short: 170, missing frame files: 0
+
+SPLIT - same ratio 3600:1000 -> 3300:1029 
+
+
+
+python scripts/prepare_dota_oncoming.py
+Valid oncoming clips: 470
+Skipped — not oncoming: 4141, window issues: 5, missing frames: 0
 
 
 
 
+some good samples for test:
 
-
-
-
-
-
-
+- uO2zGO5ydBc_001446
 
 
 

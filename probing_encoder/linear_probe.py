@@ -54,6 +54,16 @@ def get_sorted_frame_paths(folder):
     assert len(paths) == 11, f"Expected 11 frames in {folder}, found {len(paths)}"
     return paths
 
+
+def normalize_embedding_vector(vec, eps=1e-12):
+    """L2-normalize a 1D embedding vector for stable probe training."""
+    vec = np.asarray(vec, dtype=np.float32)
+    norm = np.linalg.norm(vec)
+    if norm < eps:
+        return np.zeros_like(vec)
+    return vec / norm
+
+
 def load_clip_as_window(frame_paths, size=(512, 288)):
     # Slice the temporal frames down to a structured pattern
     idxs = [0, 2, 4, 6, 8, 10]
@@ -87,6 +97,10 @@ def extract_embedding(model, folder, device, use_max_pool=True):
         # Global Average Pooling: takes the average activation
         detail_vec = h.mean(dim=[2, 3]).squeeze(0).cpu().numpy()
         semantic_vec = h2.mean(dim=[2, 3]).squeeze(0).cpu().numpy()
+
+    # Normalize each stream to unit L2 norm before concatenation.
+    detail_vec = normalize_embedding_vector(detail_vec)
+    semantic_vec = normalize_embedding_vector(semantic_vec)
     combined_vec = np.concatenate([detail_vec, semantic_vec])
 
     return detail_vec, semantic_vec, combined_vec

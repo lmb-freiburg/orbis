@@ -54,8 +54,9 @@ def load_clip_as_window(frame_paths, size=(512, 288)):
 def surprise_score_factorized(model, images, frame_rate, t_grid, n_noise_samples=8, use_ema=False):
     net = model.ema_vit if use_ema else model.vit
     net.eval()
-    x = model.encode_frames(images)  # [B, F, C, 16, 16], C split half-detail/half-semantic
+    x = model.encode_frames(images) 
     context, target = x[:, :-1].clone(), x[:, -1:]
+    # context - [1, 5, 32, 18, 32] target - [1, 1, 32, 18, 32]
     b = x.shape[0]
     n_channels = target.shape[2]
     half = n_channels // 2
@@ -67,22 +68,18 @@ def surprise_score_factorized(model, images, frame_rate, t_grid, n_noise_samples
         errs = []
         for _ in range(n_noise_samples):
             t = torch.full((b,), t_val, device=x.device)
-            # target_t, noise = model.add_noise(target, t) # CHECK - 1 instead of this can we just use x_t = t·z* + (1−t)·x₀.
-            noise = torch.randn_like(target)
-            # target_t = t * target + (1 - t) * context[:, -1:]
-            s = [target.shape[0]] + [1] * (target.dim() - 1)
-            t_view = t.view(*s)
-            target_t = t_view * target + (1 - t_view) * noise
-
+            target_t, noise = model.add_noise(target, t) # CHECK - 1
             pred = net(target_t, context, t, frame_rate=frame_rate)
-            true_v = target - noise
-            # true_v = model.A(t) * target + model.B(t) * noise # CHECK -2 instead of this can we just use the correct velocity known in closed form: (z* − x₀)
-            errs.append((pred.float() - true_v.float()) ** 2)  # [B, 1, C, 16, 16]
-        err_avg = torch.stack(errs).mean(0)
-
-        #CHECK - 3 - Make sure detail and semantic are split correctly (ie. the first half of the channels are detail, second half are semantic or not?)
+            # pred shape torch.Size([1, 1, 32, 18, 32])
+            true_v = model.A(t) * target + model.B(t) * noise # CHECK -2
+            # true_v shape torch.Size([1, 1, 32, 18, 32])
+            errs.append((pred.float() - true_v.float()) ** 2)  # err_avg shape: torch.Size([1, n, 32, 18, 32])
+            
+        err_avg = torch.stack(errs).mean(0) # err_avg shape: torch.Size([1, 1, 32, 18, 32])
+        print(f"err_avg shape: {err_avg.shape}, half: {half}")
         detail_err = err_avg[:, :, :half]
         semantic_err = err_avg[:, :, half:]
+        print(f"detail_err shape: {detail_err.shape}, semantic_err shape: {semantic_err.shape}")
 
         per_t_detail.append(detail_err.mean(dim=[1, 2, 3, 4]))      # [B]
         per_t_semantic.append(semantic_err.mean(dim=[1, 2, 3, 4]))   # [B]
@@ -167,7 +164,7 @@ HEATMAP_CLIP_IDS = [
 
 
 def generate_heatmaps_for_clips(model, clip_ids, t_grid, n_noise_samples=3,
-                                 base_dir="DoTA_prepared", device=None):
+                                 base_dir="DoTA_oncoming", device=None):
     if device is None:
         device = get_device()
     for clip_id in clip_ids:
@@ -313,8 +310,7 @@ if __name__ == "__main__":
 
     t_grid = [0.3, 0.5, 0.7, 0.9]
 
-    # just ONE clip, both windows, for a quick end-to-end check
-    test_clip_id = HEATMAP_CLIP_IDS[2]
+    test_clip_id = "uO2zGO5ydBc_001446"
     generate_heatmaps_for_clips(model, [test_clip_id], t_grid, n_noise_samples=2, device=device)
 
 # ---------- main ----------

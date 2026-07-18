@@ -22,7 +22,7 @@ random.shuffle(calib_clips)
 random.shuffle(heldout_clips)
 
 subset = calib_clips[:n_calib] + heldout_clips[:n_heldout]
-random.shuffle(subset)  # so it's not calib-then-heldout in file order
+random.shuffle(subset) 
 
 print(f"Subset: {n_calib} calib, {n_heldout} heldout, {len(subset)} total (each also contributes 1 OOD window)")
 
