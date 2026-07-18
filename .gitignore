@@ -34,6 +34,7 @@ logs_wm/
 
 # datasets
 DoTA_prepared/
+DoTA_oncoming/
 annotations/
 
 # Temporary / generated files

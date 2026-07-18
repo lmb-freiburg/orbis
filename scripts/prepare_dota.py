@@ -12,10 +12,6 @@ FRAMES_ROOT = "/Volumes/maccbeast"
 OUTPUT_DIR = PROJECT_ROOT / "DoTA_prepared"
 NUM_FRAMES = 11
 
-#CALIB_COUNT = 3600
-#HELDOUT_COUNT = 1000
-
-# new ratio
 CALIB_COUNT = 3300
 HELDOUT_COUNT = 1029
 
@@ -84,7 +80,6 @@ def main():
 
         if not (ok_non_ood and ok_ood):
             skipped_missing_frames += 1
-            # clean up partial copy if one side failed
             shutil.rmtree(Path(OUTPUT_DIR) / clip_id, ignore_errors=True)
             continue
 
@@ -119,8 +114,8 @@ def main():
         elif i < n_calib + n_heldout:
             clip["non_ood_split"] = "heldout"
         else:
-            clip["non_ood_split"] = "unused_non_ood"   # extra clips beyond calib+heldout quota
-        clip["ood_split"] = "ood"                        # every valid clip's OOD window is used
+            clip["non_ood_split"] = "unused_non_ood"   
+        clip["ood_split"] = "ood"                       
 
     manifest_path = Path(OUTPUT_DIR) / "manifest.json"
     with open(manifest_path, "w") as f:

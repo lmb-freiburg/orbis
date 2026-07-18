@@ -95,8 +95,16 @@ import glob
 RESULTS_DIR = "results"
 
 
+def _layer_norm_map(arr, eps=1e-5):
+    """Normalize a 2D error map for visualization only."""
+    tensor = torch.from_numpy(np.asarray(arr, dtype=np.float32)).float()
+    mean = tensor.mean()
+    var = tensor.var(unbiased=False)
+    return ((tensor - mean) / torch.sqrt(var + eps)).numpy()
+
+
 def load_error_map_npz(sample_id):
-    """Returns {'detail': {t_val: [16,16] array}, 'semantic': {t_val: [16,16] array}}"""
+    """Returns {'detail': {t_val: [,1616] array}, 'semantic': {t_val: [16,16] array}}"""
     path = f"{RESULTS_DIR}/error_maps/{sample_id}.npz"
     data = np.load(path)
     out = {"detail": {}, "semantic": {}}
@@ -135,7 +143,9 @@ def plot_error_maps_from_disk(sample_id, sample_label, target_frame_folder, t_gr
     fig2, axes2 = plt.subplots(2, len(t_grid), figsize=(3 * len(t_grid), 6))
     for row, stream in enumerate(["detail", "semantic"]):
         for i, t_val in enumerate(t_grid):
-            err_map = torch.from_numpy(error_maps[stream][t_val]).unsqueeze(0).unsqueeze(0)
+            err_map_raw = error_maps[stream][t_val]
+            err_map_norm = _layer_norm_map(err_map_raw)
+            err_map = torch.from_numpy(err_map_norm).unsqueeze(0).unsqueeze(0)
             err_up = F.interpolate(err_map, size=target_frame_hw, mode='bilinear', align_corners=False)
             err_up = err_up.squeeze().numpy()
 
@@ -154,17 +164,17 @@ def plot_error_maps_from_disk(sample_id, sample_label, target_frame_folder, t_gr
 
 if __name__ == "__main__":
     t_grid = [0.3, 0.5, 0.7, 0.9]
-    test_clip_id = "L334aqEJxys_001608"   # match whatever you used in scorer.py's test run
+    test_clip_id = "uO2zGO5ydBc_001446"   # match whatever you used in scorer.py's test run
 
     plot_error_maps_from_disk(
         sample_id=f"{test_clip_id}_ood_heatmap",
         sample_label="test_anomaly",
-        target_frame_folder=f"DoTA_prepared/{test_clip_id}/ood",
+        target_frame_folder=f"DoTA_oncoming/{test_clip_id}/ood",
         t_grid=t_grid,
     )
     plot_error_maps_from_disk(
         sample_id=f"{test_clip_id}_nonood_heatmap",
         sample_label="test_normal",
-        target_frame_folder=f"DoTA_prepared/{test_clip_id}/non-ood",
+        target_frame_folder=f"DoTA_oncoming/{test_clip_id}/non-ood",
         t_grid=t_grid,
     )
