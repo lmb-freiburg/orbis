@@ -4,12 +4,17 @@ import os
 import sys
 from pathlib import Path
 
+# Enable CPU fallback for unsupported MPS operators before torch imports.
+os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
+
 import cv2
 import numpy as np
 import pandas as pd
 import torch
 from omegaconf import OmegaConf
 from sklearn.metrics import roc_auc_score
+
+PYTORCH_ENABLE_MPS_FALLBACK=1
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -73,17 +78,17 @@ def surprise_score_factorized(model, images, frame_rate, t_grid, n_noise_samples
             # pred shape torch.Size([1, 1, 32, 18, 32])
             true_v = model.A(t) * target + model.B(t) * noise # CHECK -2
             # true_v shape torch.Size([1, 1, 32, 18, 32])
-            errs.append((pred.float() - true_v.float()) ** 2)  # err_avg shape: torch.Size([1, n, 32, 18, 32])
+            errs.append((pred.float() - true_v.float()) ** 2)  
             
         err_avg = torch.stack(errs).mean(0) # err_avg shape: torch.Size([1, 1, 32, 18, 32])
         print(f"err_avg shape: {err_avg.shape}, half: {half}")
         detail_err = err_avg[:, :, :half]
         semantic_err = err_avg[:, :, half:]
-        print(f"detail_err shape: {detail_err.shape}, semantic_err shape: {semantic_err.shape}")
+        # detail_err shape: torch.Size([1, 1, 16, 18, 32]), semantic_err shape: torch.Size([1, 1, 16, 18, 32])
 
-        per_t_detail.append(detail_err.mean(dim=[1, 2, 3, 4]))      # [B]
-        per_t_semantic.append(semantic_err.mean(dim=[1, 2, 3, 4]))   # [B]
-        per_t_map_detail[t_val] = detail_err.mean(dim=2).squeeze(1)   # [B, 16, 16]
+        per_t_detail.append(detail_err.mean(dim=[1, 2, 3, 4]))
+        per_t_semantic.append(semantic_err.mean(dim=[1, 2, 3, 4]))  
+        per_t_map_detail[t_val] = detail_err.mean(dim=2).squeeze(1)   
         per_t_map_semantic[t_val] = semantic_err.mean(dim=2).squeeze(1)
 
     raw_detail = torch.stack(per_t_detail, dim=1).mean(dim=1)
@@ -154,13 +159,13 @@ def compute_and_save_heatmap(model, folder, out_sample_id, t_grid, n_noise_sampl
     return raw_detail[0].item(), raw_semantic[0].item()
 
 
-HEATMAP_CLIP_IDS = [
-    "4wKjxDXnmYs_003798",
-    "fdvMUP8qvzw_000969",
-    "L334aqEJxys_001608",
-    "xpOyD-qrQUw_004160",
-    "3tEZvtQZ18Q_004890",
-]
+# HEATMAP_CLIP_IDS = [
+#     "4wKjxDXnmYs_003798",
+#     "fdvMUP8qvzw_000969",
+#     "L334aqEJxys_001608",
+#     "xpOyD-qrQUw_004160",
+#     "3tEZvtQZ18Q_004890",
+# ]
 
 
 def generate_heatmaps_for_clips(model, clip_ids, t_grid, n_noise_samples=3,
@@ -308,10 +313,12 @@ if __name__ == "__main__":
     model.load_state_dict(state, strict=True)
     model = model.to(device).eval()
 
-    t_grid = [0.3, 0.5, 0.7, 0.9]
+    t_grid = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
 
+    # clip 1 - uO2zGO5ydBc_001446
+    # clip 2 - 3u_CIo9IaWo_002136
     test_clip_id = "uO2zGO5ydBc_001446"
-    generate_heatmaps_for_clips(model, [test_clip_id], t_grid, n_noise_samples=2, device=device)
+    generate_heatmaps_for_clips(model, [test_clip_id], t_grid, n_noise_samples=3, device=device)
 
 # ---------- main ----------
 # if __name__ == "__main__":

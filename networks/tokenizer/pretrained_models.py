@@ -1,3 +1,8 @@
+import os
+
+# Enable CPU fallback for unsupported MPS operators before torch/timm imports.
+os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
+
 import torch
 import timm
 from torch import nn
