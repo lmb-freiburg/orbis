@@ -49,7 +49,7 @@ class CachedFeatureDataset(Dataset):
 
 
 class AttentionProbe(nn.Module):
-    def __init__(self, input_dim, num_classes=2, num_heads=4):
+    def __init__(self, input_dim, num_classes=2, num_heads=8):
         super().__init__()
         # 1. Learnable query token acting as the context summarizer
         self.query = nn.Parameter(torch.randn(1, 1, input_dim))
@@ -106,8 +106,7 @@ def train_linear_probe():
     val_loader = DataLoader(val_dataset, batch_size=config.batch_size, shuffle=False)
     
     # 3. Initialize Attention Probe with embed_dim=32
-    # Setting num_heads=4 because embed_dim must be divisible by num_heads (32 % 4 == 0)
-    model = AttentionProbe(input_dim=32, num_heads=4).to(device)
+    model = AttentionProbe(input_dim=32, num_heads=8).to(device)
     
     criterion = nn.CrossEntropyLoss()
     
@@ -247,6 +246,30 @@ if __name__ == "__main__":
             }
         }
     }
+    # # Best Hyper Param-Setting - misunderstood-sweep-20
+    #     batch_size: 16
+    #     beta1: 0.95
+    #     beta2:0.999
+    #     early_stopping_patience:5
+    #     learning_rate:0.00007114681159456426
+    #     weight_decay:0.012770392467248684
+    # # Best Summary metrics for above Hyperparameters setting
+    # {
+    #     "_step": 48,
+    #     "epoch": 49,
+    #     "_wandb.runtime": 23,
+    #     "val_auc": 0.6660081491542166,
+    #     "_runtime": 23,
+    #     "val_loss": 0.6123684744040171,
+    #     "_timestamp": 1784542445.670143,
+    #     "train_loss": 0.6110577013757493,
+    #     "val_recall": 53.84615384615385,
+    #     "val_accuracy": 66.66666666666666,
+    #     "val_precision": 73.13432835820896,
+    #     "train_accuracy": 65.13888888888889
+    # }
+
+
 
     # Initialize W&B Sweep
     sweep_id = wandb.sweep(sweep_config, project="orbis-encoder-attention-probe")

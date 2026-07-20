@@ -216,6 +216,31 @@ if __name__ == "__main__":
         }
     }
 
+    # # Best Hyper Param-Setting - upbeat-sweep-20
+    #     batch_size:32
+    #       beta1: 0.95
+    # beta2: 0.999
+    # early_stopping_patience:5
+    # learning_rate: 0.000915962842484255
+    # weight_decay: 0.04801436623071827
+
+
+    # # Best Summary metrics for above Hyperparameters setting
+    # {
+    #   "_step": 22,
+    #   "epoch": 23,
+    #   "_wandb.runtime": 3,
+    #   "val_auc": 0.6057537967650327,
+    #   "_runtime": 3,
+    #   "val_loss": 0.6746813456217448,
+    #   "_timestamp": 1784199880.041634,
+    #   "train_loss": 0.6837285109188246,
+    #   "val_recall": 59.34065934065934,
+    #   "val_accuracy": 60.55555555555555,
+    #   "val_precision": 61.36363636363637,
+    #   "train_accuracy": 55
+    # }
+    
     # Initialize the sweep
     sweep_id = wandb.sweep(sweep_config, project="orbis-encoder-linear-maxpool-probe")
 

@@ -11,6 +11,7 @@ class CachedFeatureDataset(Dataset):
         data = torch.load(cache_path)
         self.features = data['features']
         self.labels = data['labels'].long() 
+        self.ids = data['ids']
         # If you saved IDs, you can also load self.ids = data['ids'] here
         print(f'Loaded {cache_path} | Shape - {self.features.shape} , {self.labels.shape}')
         
@@ -61,7 +62,7 @@ class AttentionProbe(nn.Module):
         # Pass the attended features into the final classifier
         logits = self.classifier(pooled_features)
         
-        return logits
+        return logits, attn_weights
 
 def train_linear_probe():
     # 1. Initialize W&B run (Config is populated by the Sweep agent)
@@ -108,7 +109,7 @@ def train_linear_probe():
         correct = 0
         total = 0
         
-        for idx, (features, labels, *_) in enumerate(train_loader):
+        for idx, (features, labels, ids) in enumerate(train_loader):
             features, labels = features.to(device), labels.to(device)
             
             optimizer.zero_grad()
@@ -133,10 +134,12 @@ def train_linear_probe():
         all_val_preds = []
         all_val_probs = []
 
+        current_epoch_attention_weights = {}
+
         with torch.no_grad():
-            for features, labels, *_ in val_loader:
+            for features, labels, ids in val_loader:
                 features, labels = features.to(device), labels.to(device)
-                outputs = model(features)
+                outputs, attn_wts = model(features)
                 
                 # Calculate Validation Loss for Early Stopping
                 val_loss = criterion(outputs, labels)
@@ -148,6 +151,10 @@ def train_linear_probe():
                 all_val_labels.extend(labels.cpu().numpy())
                 all_val_preds.extend(predicted.cpu().numpy())
                 all_val_probs.extend(probs.cpu().numpy())
+
+                # Extract and save attention map per sequence ID directly to files
+                for i, id in enumerate(ids):
+                    current_epoch_attention_weights[id] = attn_wts[i].squeeze(0).cpu()
                 
         # 6. Calculate Metrics
         avg_val_loss = total_val_loss / len(val_loader)
@@ -191,40 +198,109 @@ def train_linear_probe():
 
 if __name__ == "__main__":
     # Define the Hyperparameter Sweep Configuration
+    # sweep_config = {
+    #     'method': 'bayes', # Bayesian optimization 
+    #     'metric': {
+    #         'name': 'val_loss',
+    #         'goal': 'minimize'   
+    #     },
+    #     'parameters': {
+    #         'learning_rate': {
+    #             'distribution': 'log_uniform_values',
+    #             'min': 1e-6,
+    #             'max': 1e-3
+    #         },
+    #         'weight_decay': {
+    #             'distribution': 'uniform',
+    #             'min': 0.0,
+    #             'max': 0.1
+    #         },
+    #         'batch_size': {
+    #             'values': [16, 32, 64]
+    #         },
+    #         'beta1': {
+    #             'values': [0.9, 0.95]
+    #         },
+    #         'beta2': {
+    #             'values': [0.99, 0.999]
+    #         },
+    #         'early_stopping_patience': {
+    #             'value': 5
+    #         }
+    #     }
+    # }
+
     sweep_config = {
-        'method': 'bayes', # Bayesian optimization 
-        'metric': {
-            'name': 'val_loss',
-            'goal': 'minimize'   
+    'method': 'grid',  # Changed to grid to run this specific configuration once
+    'metric': {
+        'name': 'val_loss',
+        'goal': 'minimize'   
+    },
+    'parameters': {
+        'learning_rate': {
+            'value': 0.00001935262894891232  # Exact best learning rate
         },
-        'parameters': {
-            'learning_rate': {
-                'distribution': 'log_uniform_values',
-                'min': 1e-6,
-                'max': 1e-3
-            },
-            'weight_decay': {
-                'distribution': 'uniform',
-                'min': 0.0,
-                'max': 0.1
-            },
-            'batch_size': {
-                'values': [16, 32, 64]
-            },
-            'beta1': {
-                'values': [0.9, 0.95]
-            },
-            'beta2': {
-                'values': [0.99, 0.999]
-            },
-            'early_stopping_patience': {
-                'value': 5
-            }
+        'weight_decay': {
+            'value': 0.056775318543155096    # Exact best weight decay
+        },
+        'batch_size': {
+            'value': 32
+        },
+        'beta1': {
+            'value': 0.95
+        },
+        'beta2': {
+            'value': 0.99
+        },
+        'early_stopping_patience': {
+            'value': 5
         }
     }
+    }
+    # # Best Hyper Param-Setting - dauntless-sweep-15
+    #     batch_size:32
+    #     beta1:0.95
+    #     beta2:0.99
+    #     early_stopping_patience:5
+    #     learning_rate:0.00001935262894891232
+    #     weight_decay:0.056775318543155096
+
+    # # Best Summary metrics for above Hyperparameters setting
+    # {
+    #     "_step": 33,
+    #     "epoch": 34,
+    #     "_wandb.runtime": 98,
+    #     "val_auc": 0.7982466971231016,
+    #     "_runtime": 98,
+    #     "val_loss": 0.5442327558994293,
+    #     "_timestamp": 1784202666.857404,
+    #     "train_loss": 0.4139233272184025,
+    #     "val_recall": 63.73626373626373,
+    #     "val_accuracy": 69.44444444444444,
+    #     "val_precision": 72.5,
+    #     "train_accuracy": 81.5340909090909
+    # }
+
+
 
     # Initialize the sweep
-    sweep_id = wandb.sweep(sweep_config, project="orbis-attention-probe")
-
+    # sweep_id = wandb.sweep(sweep_config, project="orbis-attention-probe")
     # Run the sweep agent (this will run train_linear_probe 20 times with different parameters)
-    wandb.agent(sweep_id, function=train_linear_probe, count=20)
+    # wandb.agent(sweep_id, function=train_linear_probe, count=20)
+
+
+    
+    sweep_id = wandb.sweep(sweep_config, project="orbis-attention-probe-weights")
+    wandb.agent(sweep_id, function=train_linear_probe, count=1)
+
+    # # Load your attention weights look-up map
+    # attn_map = torch.load("best_val_attention_weights.pt")
+
+    # Query weights for a specific target sequence ID
+    my_sequence_id = "sequence_xyz_123" 
+    weights = attn_map[my_sequence_id] # Tensors shape: [576]
+
+    # Reshape back to spatial token map dimension (e.g., 24x24 if 576 tokens)
+    spatial_weights = weights.reshape(18, 24)
+
+

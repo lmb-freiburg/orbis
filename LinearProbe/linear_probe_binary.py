@@ -175,37 +175,87 @@ def train_linear_probe():
 
 if __name__ == "__main__":
     # Define the Hyperparameter Sweep Configuration
+    # sweep_config = {
+    #     'method': 'bayes', # Bayesian optimization (finds the best params faster than random)
+    #     'metric': {
+    #         'name': 'val_loss',
+    #         'goal': 'minimize'   
+    #     },
+    #     'parameters': {
+    #         'learning_rate': {
+    #             'distribution': 'log_uniform_values',
+    #             'min': 1e-6,
+    #             'max': 1e-3
+    #         },
+    #         'weight_decay': {
+    #             'distribution': 'uniform',
+    #             'min': 0.0,
+    #             'max': 0.1
+    #         },
+    #         'batch_size': {
+    #             'values': [16, 32, 64]
+    #         },
+    #         'beta1': {
+    #             'values': [0.9, 0.95]
+    #         },
+    #         'beta2': {
+    #             'values': [0.99, 0.999]
+    #         },
+    #         'early_stopping_patience': {
+    #             'value': 5
+    #         }
+    #     }
+    # }
     sweep_config = {
-        'method': 'bayes', # Bayesian optimization (finds the best params faster than random)
-        'metric': {
-            'name': 'val_loss',
-            'goal': 'minimize'   
+    'method': 'grid',  # Changed to grid since we are running a single fixed point
+    'metric': {
+        'name': 'val_loss',
+        'goal': 'minimize'   
+    },
+    'parameters': {
+        'learning_rate': {
+            'value': 0.0006432805604895261  # Exact best learning rate
         },
-        'parameters': {
-            'learning_rate': {
-                'distribution': 'log_uniform_values',
-                'min': 1e-6,
-                'max': 1e-3
-            },
-            'weight_decay': {
-                'distribution': 'uniform',
-                'min': 0.0,
-                'max': 0.1
-            },
-            'batch_size': {
-                'values': [16, 32, 64]
-            },
-            'beta1': {
-                'values': [0.9, 0.95]
-            },
-            'beta2': {
-                'values': [0.99, 0.999]
-            },
-            'early_stopping_patience': {
-                'value': 5
-            }
+        'weight_decay': {
+            'value': 0.06599430117405974    # Exact best weight decay
+        },
+        'batch_size': {
+            'value': 64
+        },
+        'beta1': {
+            'value': 0.95
+        },
+        'beta2': {
+            'value': 0.999
+        },
+        'early_stopping_patience': {
+            'value': 5
         }
     }
+    }
+    # # Best Hyper Param-Setting - smooth-sweep-20
+    # batch_size:64
+    # beta1:0.95
+    # beta2:0.999
+    # early_stopping_patience:5
+    # learning_rate:0.0006432805604895261
+    # weight_decay:0.06599430117405974
+
+    # # Best Summary metrics for above Hyperparameters setting
+    # {
+    #     "_step": 49,
+    #     "epoch": 50,
+    #     "_wandb.runtime": 16,
+    #     "val_auc": 0.7210766761328559,
+    #     "_runtime": 16,
+    #     "val_loss": 0.6219724218050638,
+    #     "_timestamp": 1784200511.4264178,
+    #     "train_loss": 0.5774389157692591,
+    #     "val_recall": 52.74725274725275,
+    #     "val_accuracy": 66.11111111111111,
+    #     "val_precision": 72.72727272727273,
+    #     "train_accuracy": 72.5
+    # }
 
     # Initialize the sweep
     sweep_id = wandb.sweep(sweep_config, project="orbis-linear-maxpool-probe")
