@@ -140,9 +140,14 @@ some good samples for test:
 - uO2zGO5ydBc_001446
 
 
+understanding the dimensions:
 
+after passing through the encoder each clip (5 context + 1 target) has a dim of:
 
+context shape: torch.Size([1, 5, 32, 18, 32]) 
+target shape: torch.Size([1, 1, 32, 18, 32])
 
+pred shape: torch.Size([1, 1, 32, 18, 32])
 
 
 

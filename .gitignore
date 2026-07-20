@@ -36,6 +36,7 @@ logs_wm/
 DoTA_prepared/
 DoTA_oncoming/
 annotations/
+results_pt/
 
 # Temporary / generated files
 *.tmp
