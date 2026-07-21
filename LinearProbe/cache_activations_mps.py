@@ -47,10 +47,13 @@ def cache_features(model, dataloader, device, save_dir, split_name, checkpoint_i
 
     # 2. Register hooks for multiple blocks (Index = Block Number - 1)
     target_blocks = {
-        'block6': 5,
-        'block12': 11,
-        'block18': 17,
-        'block24': 23
+        # 'block6': 5
+        # ,
+        # 'block12': 11
+        # ,
+        'block18': 17
+        # ,
+        # 'block24': 23
     }
     
     hook_handles = []
@@ -61,16 +64,17 @@ def cache_features(model, dataloader, device, save_dir, split_name, checkpoint_i
     # Initialize storage dictionaries
     all_features = {name: [] for name in target_blocks.keys()}
     all_labels = []
-    all_ids = []
+    all_mc_labels = []
+    all_video_ids = []
     
     os.makedirs(save_dir, exist_ok=True)
     print(f"Extracting features for '{split_name}' split (saving backups every {checkpoint_interval} batches)...")
     
     with torch.no_grad():
         for i, batch_data in enumerate(tqdm(dataloader)):
-
             clips = batch_data[0].to(device)
             labels = batch_data[1]
+            mc_labels = batch_data[2] if len(batch_data) > 2 else None
             clip_ids = batch_data[-1]
 
             if hasattr(model, "encode_frames") and hasattr(model, "vit"):
@@ -97,19 +101,22 @@ def cache_features(model, dataloader, device, save_dir, split_name, checkpoint_i
                 all_features[name].append(features.cpu())
 
             all_labels.append(labels.cpu())
-            
-            all_ids.extend(clip_ids)
+            all_mc_labels.append(mc_labels.cpu()) if mc_labels is not None else None
+            all_video_ids.extend(clip_ids)
 
             # 4. Incremental Caching checkpointing logic
             if (i + 1) % checkpoint_interval == 0:
                 temp_labels = torch.cat(all_labels, dim=0)
+                # Strings cannot be torch.cat'ed, we just pass the flat list directly
+                temp_mc_labels = torch.cat(all_mc_labels, dim=0) if all_mc_labels else None
                 
                 for name in target_blocks.keys():
-                    partial_save_path = os.path.join(save_dir, f"{split_name}_{name}_unpooled_partial.pt")
+                    partial_save_path = os.path.join(save_dir, f"{split_name}_{name}_unpooled_mc.pt")
                     temp_features = torch.cat(all_features[name], dim=0)
-                    
-                    # Strings cannot be torch.cat'ed, we just pass the flat list directly
-                    torch.save({'features': temp_features, 'labels': temp_labels, 'ids': all_ids}, partial_save_path)
+                    if temp_mc_labels is None:
+                        torch.save({'features': temp_features, 'labels': temp_labels, 'video_ids': all_video_ids}, partial_save_path)
+                    else:
+                        torch.save({'features': temp_features, 'labels': temp_labels, 'mc_labels': all_mc_labels, 'video_ids': all_video_ids}, partial_save_path)
                     del temp_features
                 
                 del temp_labels  # Memory flush
@@ -123,12 +130,14 @@ def cache_features(model, dataloader, device, save_dir, split_name, checkpoint_i
     
     # 5. Concatenate and save absolute final outputs for each block
     for name in target_blocks.keys():
-        final_save_path = os.path.join(save_dir, f"{split_name}_{name}_unpooled.pt")
-        partial_save_path = os.path.join(save_dir, f"{split_name}_{name}_unpooled_partial.pt")
+        final_save_path = os.path.join(save_dir, f"{split_name}_{name}_unpooled_mc.pt")
+        partial_save_path = os.path.join(save_dir, f"{split_name}_{name}_unpooled_partial_mc.pt")
         
         tensor_features = torch.cat(all_features[name], dim=0)
-        
-        torch.save({'features': tensor_features, 'labels': tensor_labels, 'ids': all_ids}, final_save_path)
+        if all_mc_labels is None or len(all_mc_labels) == 0:
+            torch.save({'features': tensor_features, 'labels': tensor_labels, 'video_ids': all_video_ids}, final_save_path)
+        else:
+            torch.save({'features': tensor_features, 'labels': tensor_labels, 'mc_labels': all_mc_labels, 'video_ids': all_video_ids}, final_save_path)
         
         # Clean up partial file on complete run success
         if os.path.exists(partial_save_path):
@@ -153,6 +162,9 @@ def parse_args():
 
 if __name__ == "__main__":
     args = parse_args()
+
+    MAX_SAMPLES = 50
+    MULTI_CLASS = True
     
     if torch.backends.mps.is_available():
         device = torch.device("mps")
@@ -169,6 +181,9 @@ if __name__ == "__main__":
         args.anno_dir,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
+        max_samples = MAX_SAMPLES,
+        return_multiclass_labels=MULTI_CLASS,
+        num_frames_per_clip=6
     )
 
     model = load_model_from_config(args.exp_dir, args.config, args.ckpt, device)

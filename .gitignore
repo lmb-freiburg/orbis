@@ -10,3 +10,4 @@
 *.pt
 *DONTUSE*
 *wandb*
+*manifest*

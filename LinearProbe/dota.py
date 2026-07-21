@@ -199,8 +199,9 @@ class DoTAClipDataset(Dataset):
         sample = self.samples[idx]
         clip_paths = sample['clip_paths']
         label = sample['label']
-        class_label = sample.get('class_label', None)
-        
+        mc_label = sample.get('class_label', None)
+        video_id = sample['video_name']
+
         frames = []
         for img_path in clip_paths:
             img = Image.open(img_path).convert('RGB')
@@ -214,10 +215,10 @@ class DoTAClipDataset(Dataset):
         clip_tensor = torch.stack(frames, dim=0).permute(1, 0, 2, 3)
 
         if self.return_multiclass_labels:
-            class_label_tensor = torch.tensor(-1 if class_label is None else class_label, dtype=torch.long)
-            return clip_tensor, torch.tensor(label, dtype=torch.long), class_label_tensor
+            mc_label_tensor = torch.tensor(-1 if mc_label is None else mc_label, dtype=torch.long)
+            return clip_tensor, torch.tensor(label, dtype=torch.long), mc_label_tensor, video_id
 
-        return clip_tensor, torch.tensor(label, dtype=torch.long)
+        return clip_tensor, torch.tensor(label, dtype=torch.long), video_id
 
 
 def get_dota_dataloaders(sequence_dir, annotation_dir, batch_size=8, num_workers=4, max_samples=900, return_multiclass_labels=False, num_frames_per_clip=6):
@@ -311,7 +312,7 @@ if __name__ == "__main__":
     # Global Parameters
     TARGET_FRAMES = 6 
     RETURN_MULTICLASS = True  # <-- Toggle multiclass output here
-    MAX_SAMPLES = 900         # <-- Global control of the subset size
+    MAX_SAMPLES = 900       # <-- Global control of the subset size
 
     print("Testing DoTA Dataset Pipeline...")
     
@@ -328,18 +329,20 @@ if __name__ == "__main__":
         
         print("\n--- Batch Verification ---")
         if RETURN_MULTICLASS:
-            for clips, labels, mc_labels in train_loader:
+            for clips, labels, mc_labels, video_ids in train_loader:
                 print(f"Clip tensor shape:      {clips.shape}  --> Expected: [Batch=10, Channels=3, Time={TARGET_FRAMES}, Height=288, Width=512]")
                 print(f"Binary Labels shape:    {labels.shape}  --> Expected: [Batch=10]")
                 print(f"Binary Labels values:   {labels.tolist()}")
                 print(f"Multiclass shape:       {mc_labels.shape} --> Expected: [Batch=10]")
                 print(f"Multiclass values:      {mc_labels.tolist()}")
+                print(f"Video IDs:              {video_ids}")
                 break
         else:
-            for clips, labels in train_loader:
+            for clips, labels, video_ids in train_loader:
                 print(f"Clip tensor shape:      {clips.shape}  --> Expected: [Batch=10, Channels=3, Time={TARGET_FRAMES}, Height=288, Width=512]")
                 print(f"Binary Labels shape:    {labels.shape}  --> Expected: [Batch=10]")
                 print(f"Binary Labels values:   {labels.tolist()}")
+                print(f"Video IDs:              {video_ids}")
                 break
             
         print("\nSuccess! Pipeline is ready.")

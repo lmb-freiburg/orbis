@@ -12,7 +12,7 @@ class CachedFeatureDataset(Dataset):
         self.features = data['features']
         self.labels = data['labels'].long() 
         self.mc_labels = data['mc_labels'] if 'mc_labels' in data else None
-        self.video_ids = data['video_ids']
+        self.video_ids = data['ids']
         # If you saved IDs, you can also load self.ids = data['ids'] here
         print(f'Loaded {cache_path} | Shape - {self.features.shape} , {self.labels.shape}')
         
@@ -20,7 +20,6 @@ class CachedFeatureDataset(Dataset):
         return len(self.features)
 
     def __getitem__(self, idx):
-        print('-------',idx)
         # Add self.ids[idx] here if you added IDs to your caching script!
         if self.mc_labels is None:
             return self.features[idx], self.labels[idx], self.video_ids[idx]
@@ -77,8 +76,8 @@ def train_linear_probe():
     print(f"Using device: {device}")
     
     # 2. Load Cached Data from Block 18
-    train_dataset = CachedFeatureDataset("./cached_features/train_block12_unpooled_mc.pt")
-    val_dataset = CachedFeatureDataset("./cached_features/val_block12_unpooled_mc.pt")
+    train_dataset = CachedFeatureDataset("./cached_features/train_block18.pt")
+    val_dataset = CachedFeatureDataset("./cached_features/val_block18.pt")
 
     print(f'------- Train: {len(train_dataset)} | Val: {len(val_dataset)} ---------')
     
@@ -91,7 +90,7 @@ def train_linear_probe():
     model = AttentionProbe(input_dim=hidden_dim, num_heads=8).to(device)
     
     criterion = nn.CrossEntropyLoss()
-    print('---------1-----') 
+    
     # Use HPO configs for AdamW
     optimizer = optim.AdamW(
         model.parameters(), 
@@ -106,16 +105,14 @@ def train_linear_probe():
     patience_counter = 0
     epochs = 50 # Max epochs, but early stopping handles halting
     
-    print('---------2-----') 
     # 4. Training Loop
     for epoch in range(epochs):
         model.train()
         total_train_loss = 0
         correct = 0
         total = 0
-        print('---------3-----') 
+        
         for idx, batch_data in enumerate(train_loader):
-            print(idx,'------')
             features = batch_data[0].to(device)
             labels = batch_data[1].to(device)
             video_ids = batch_data[-1]
@@ -164,6 +161,7 @@ def train_linear_probe():
 
                 # Extract and save attention map per sequence ID directly to files
                 for i, id in enumerate(video_ids):
+                    print (id)
                     current_epoch_attention_weights[id] = attn_wts[i].squeeze(0).cpu()
                 
         # 6. Calculate Metrics
