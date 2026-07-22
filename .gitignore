@@ -37,6 +37,8 @@ DoTA_prepared/
 DoTA_oncoming/
 annotations/
 results_pt/
+results/
+DoTA_pedestrian/
 
 # Temporary / generated files
 *.tmp

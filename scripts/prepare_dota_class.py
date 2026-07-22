@@ -6,9 +6,9 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = SCRIPT_DIR.parent
 ANNOTATIONS_DIR = PROJECT_ROOT / "annotations"
 FRAMES_ROOT = "/Volumes/maccbeast"
-OUTPUT_DIR = PROJECT_ROOT / "DoTA_oncoming"
+OUTPUT_DIR = PROJECT_ROOT / "DoTA_pedestrian"
 NUM_FRAMES = 11
-TARGET_ANOMALY_NAME = "oncoming"
+TARGET_ANOMALY_NAME = "pedestrian"
 FRAMES_INTO_ANOMALY = 3   # target frame lands just 3 frames after anomaly onset — object visible, not yet crashed
 
 
@@ -77,15 +77,15 @@ def main():
             "clip_id": clip_id,
             "anomaly_name": meta["accident_name"],
             "night": meta.get("night", False),
-            "non_ood_split": "oncoming_test",   # reuse existing calibration, no new calib/heldout needed
-            "ood_split": "oncoming_test",
+            "non_ood_split": "pedestrian_test",   # reuse existing calibration, no new calib/heldout needed
+            "ood_split": "pedestrian_test",
         })
 
-    print(f"Valid oncoming clips: {len(valid_clips)}")
-    print(f"Skipped — not oncoming: {skipped_not_oncoming}, window issues: {skipped_window}, "
+    print(f"Valid pedestrian clips: {len(valid_clips)}")
+    print(f"Skipped — not pedestrian: {skipped_not_oncoming}, window issues: {skipped_window}, "
           f"missing frames: {skipped_missing}")
 
-    with open(OUTPUT_DIR / "manifest_oncoming.json", "w") as f:
+    with open(OUTPUT_DIR / "manifest_pedestrian.json", "w") as f:
         json.dump(valid_clips, f, indent=2)
 
 

@@ -159,15 +159,6 @@ def compute_and_save_heatmap(model, folder, out_sample_id, t_grid, n_noise_sampl
     return raw_detail[0].item(), raw_semantic[0].item()
 
 
-# HEATMAP_CLIP_IDS = [
-#     "4wKjxDXnmYs_003798",
-#     "fdvMUP8qvzw_000969",
-#     "L334aqEJxys_001608",
-#     "xpOyD-qrQUw_004160",
-#     "3tEZvtQZ18Q_004890",
-# ]
-
-
 def generate_heatmaps_for_clips(model, clip_ids, t_grid, n_noise_samples=3,
                                  base_dir="DoTA_oncoming", device=None):
     if device is None:
