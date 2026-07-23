@@ -45,15 +45,10 @@ def cache_features(model, dataloader, device, save_dir, split_name, checkpoint_i
             activation[name] = output[0] if isinstance(output, tuple) else output
         return hook
 
-    # 2. Register hooks for multiple blocks (Index = Block Number - 1)
+    # 2. Register hooks for multiple blocks
     target_blocks = {
-        # 'block6': 5
-        # ,
-        # 'block12': 11
-        # ,
-        'block18': 17
-        # ,
-        # 'block24': 23
+        'block18': 17,
+        'block20': 19
     }
     
     hook_handles = []
@@ -101,51 +96,57 @@ def cache_features(model, dataloader, device, save_dir, split_name, checkpoint_i
                 all_features[name].append(features.cpu())
 
             all_labels.append(labels.cpu())
-            all_mc_labels.append(mc_labels.cpu()) if mc_labels is not None else None
+            if mc_labels is not None:
+                all_mc_labels.append(mc_labels.cpu())
             all_video_ids.extend(clip_ids)
 
             # 4. Incremental Caching checkpointing logic
             if (i + 1) % checkpoint_interval == 0:
+                print('Caching Checkpoint')
                 temp_labels = torch.cat(all_labels, dim=0)
-                # Strings cannot be torch.cat'ed, we just pass the flat list directly
-                temp_mc_labels = torch.cat(all_mc_labels, dim=0) if all_mc_labels else None
+                temp_mc_labels = torch.cat(all_mc_labels, dim=0) if len(all_mc_labels) > 0 else None
                 
                 for name in target_blocks.keys():
-                    partial_save_path = os.path.join(save_dir, f"{split_name}_{name}_unpooled_mc.pt")
+                    partial_save_path = os.path.join(save_dir, f"{split_name}_{name}_4000_unpooled_partial_mc.pt")
                     temp_features = torch.cat(all_features[name], dim=0)
+                    
                     if temp_mc_labels is None:
                         torch.save({'features': temp_features, 'labels': temp_labels, 'video_ids': all_video_ids}, partial_save_path)
                     else:
-                        torch.save({'features': temp_features, 'labels': temp_labels, 'mc_labels': all_mc_labels, 'video_ids': all_video_ids}, partial_save_path)
+                        torch.save({'features': temp_features, 'labels': temp_labels, 'mc_labels': temp_mc_labels, 'video_ids': all_video_ids}, partial_save_path)
+                    
+                    print(f'Saved checkpoint {i+1} in {partial_save_path}')
                     del temp_features
                 
-                del temp_labels  # Memory flush
+                del temp_labels
+                if temp_mc_labels is not None:
+                    del temp_mc_labels
 
     # Clean up all hooks
     for handle in hook_handles:
         handle.remove()
     
-    # Concatenate final labels
-    tensor_labels = torch.cat(all_labels, dim=0)
-    
     # 5. Concatenate and save absolute final outputs for each block
+    tensor_labels = torch.cat(all_labels, dim=0)
+    tensor_mc_labels = torch.cat(all_mc_labels, dim=0) if len(all_mc_labels) > 0 else None
+    
     for name in target_blocks.keys():
-        final_save_path = os.path.join(save_dir, f"{split_name}_{name}_unpooled_mc.pt")
-        partial_save_path = os.path.join(save_dir, f"{split_name}_{name}_unpooled_partial_mc.pt")
+        final_save_path = os.path.join(save_dir, f"{split_name}_{name}_4000_unpooled_mc.pt")
+        partial_save_path = os.path.join(save_dir, f"{split_name}_{name}_4000_unpooled_partial_mc.pt")
         
         tensor_features = torch.cat(all_features[name], dim=0)
-        if all_mc_labels is None or len(all_mc_labels) == 0:
+        
+        # Save using the concatenated tensor, NOT the list
+        if tensor_mc_labels is None:
             torch.save({'features': tensor_features, 'labels': tensor_labels, 'video_ids': all_video_ids}, final_save_path)
         else:
-            torch.save({'features': tensor_features, 'labels': tensor_labels, 'mc_labels': all_mc_labels, 'video_ids': all_video_ids}, final_save_path)
+            torch.save({'features': tensor_features, 'labels': tensor_labels, 'mc_labels': tensor_mc_labels, 'video_ids': all_video_ids}, final_save_path)
         
         # Clean up partial file on complete run success
         if os.path.exists(partial_save_path):
             os.remove(partial_save_path)
             
         print(f"Saved completed dataset to {final_save_path}: {tensor_features.shape[0]} clips with dimension {tensor_features.shape[1:]}")
-
-
 def parse_args():
     parser = argparse.ArgumentParser(description="Cache linear-probe features from a trained orbis checkpoint.")
     parser.add_argument("--exp_dir", type=str, default="./logs_wm/orbis_288x512")
@@ -156,14 +157,14 @@ def parse_args():
     parser.add_argument("--batch_size", type=int, default=8)
     parser.add_argument("--num_workers", type=int, default=4)
     parser.add_argument("--save_dir", type=str, default="./cached_features")
-    parser.add_argument("--checkpoint_interval", type=int, default=100, help="Backup cache every N sequences")
+    parser.add_argument("--checkpoint_interval", type=int, default=12, help="Backup cache every N sequences")
     return parser.parse_args()
 
 
 if __name__ == "__main__":
     args = parse_args()
 
-    MAX_SAMPLES = 50
+    MAX_SAMPLES = 4000
     MULTI_CLASS = True
     
     if torch.backends.mps.is_available():

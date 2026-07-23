@@ -6,6 +6,8 @@ from torch.utils.data import Dataset, DataLoader
 from sklearn.metrics import accuracy_score, precision_score, recall_score, roc_auc_score, confusion_matrix
 import wandb # Added Weights & Biases
 
+NUM_CLASS = 9
+
 class CachedFeatureDataset(Dataset):
     def __init__(self, cache_path):
         data = torch.load(cache_path)
@@ -51,7 +53,7 @@ class AttentionProbe(nn.Module):
         x = self.norm1(x)
         
         # Cross-Attention
-        attn_out, attn_weights = self.attn(query=q, key=x, value=x, average_attn_weights=False)
+        attn_out, attn_weights = self.attn(query=q, key=x, value=x)
 
         
         # Squeeze out the sequence dimension: [Batch, 1, 768] -> [Batch, 768]
@@ -87,7 +89,8 @@ def train_linear_probe():
     
     # 3. Initialize Attention Probe
     hidden_dim = 768 
-    model = AttentionProbe(input_dim=hidden_dim, num_heads=8).to(device)
+    num_classes = NUM_CLASS
+    model = AttentionProbe(input_dim=hidden_dim, num_heads=8, num_classes=num_classes).to(device)
     
     criterion = nn.CrossEntropyLoss()
     # Use HPO configs for AdamW
@@ -112,19 +115,20 @@ def train_linear_probe():
         total = 0
         for idx, batch_data in enumerate(train_loader):
             features = batch_data[0].to(device)
-            labels = batch_data[1].to(device)
+            # labels = batch_data[1].to(device)
+            mc_labels = batch_data[2].to(device)
             video_ids = batch_data[-1]
             
             optimizer.zero_grad()
             outputs, _ = model(features)
-            loss = criterion(outputs, labels)
+            loss = criterion(outputs, mc_labels)
             loss.backward()
             optimizer.step()
             
             total_train_loss += loss.item()
             _, predicted = outputs.max(1)
-            total += labels.size(0)
-            correct += predicted.eq(labels).sum().item()
+            total += mc_labels.size(0)
+            correct += predicted.eq(mc_labels).sum().item()
             
         avg_train_loss = total_train_loss / len(train_loader)
         train_acc = 100. * correct / total
@@ -133,7 +137,7 @@ def train_linear_probe():
         model.eval()
         total_val_loss = 0
         
-        all_val_labels = []
+        all_val_mc_labels = []
         all_val_preds = []
         all_val_probs = []
 
@@ -142,36 +146,38 @@ def train_linear_probe():
         with torch.no_grad():
             for batch_data in val_loader:
                 features = batch_data[0].to(device)
-                labels = batch_data[1].to(device)
+                # labels = batch_data[1].to(device)
+                mc_labels = batch_data[2].to(device)
                 video_ids = batch_data[-1]
                 outputs, attn_wts = model(features)
+                
                 # Calculate Validation Loss for Early Stopping
-                val_loss = criterion(outputs, labels)
+                val_loss = criterion(outputs, mc_labels)
                 total_val_loss += val_loss.item()
                 
                 _, predicted = outputs.max(1)
-                probs = F.softmax(outputs, dim=1)[:, 1]
+                probs = F.softmax(outputs, dim=1)
                 
-                all_val_labels.extend(labels.cpu().numpy())
+                all_val_mc_labels.extend(mc_labels.cpu().numpy())
                 all_val_preds.extend(predicted.cpu().numpy())
                 all_val_probs.extend(probs.cpu().numpy())
 
                 # Extract and save attention map per sequence ID directly to files
                 for i, id in enumerate(video_ids):
-                    current_epoch_attention_weights[id] = attn_wts[i].squeeze(1).cpu()
+                    current_epoch_attention_weights[id] = attn_wts[i].squeeze(0).cpu()
                 
         # 6. Calculate Metrics
         avg_val_loss = total_val_loss / len(val_loader)
-        val_acc = accuracy_score(all_val_labels, all_val_preds) * 100
-        val_precision = precision_score(all_val_labels, all_val_preds, zero_division=0) * 100
-        val_recall = recall_score(all_val_labels, all_val_preds, zero_division=0) * 100
+        val_acc = accuracy_score(all_val_mc_labels, all_val_preds) * 100
+        val_precision = precision_score(all_val_mc_labels, all_val_preds, zero_division=0, average='weighted') * 100
+        val_recall = recall_score(all_val_mc_labels, all_val_preds, zero_division=0, average='weighted') * 100
         
         try:
-            val_auc = roc_auc_score(all_val_labels, all_val_probs)
+            val_auc = roc_auc_score(all_val_mc_labels, all_val_probs, multi_class='ovr')
         except ValueError:
             val_auc = float('nan')
             
-        cm = confusion_matrix(all_val_labels, all_val_preds)
+        cm = confusion_matrix(all_val_mc_labels, all_val_preds)
         
         # 7. Print and Log to W&B
         print(f"\nEpoch {epoch+1}/{epochs} | Train Loss: {avg_train_loss:.4f} | Val Loss: {avg_val_loss:.4f}")
@@ -207,100 +213,47 @@ def train_linear_probe():
 
 if __name__ == "__main__":
     # Define the Hyperparameter Sweep Configuration
-    # sweep_config = {
-    #     'method': 'bayes', # Bayesian optimization 
-    #     'metric': {
-    #         'name': 'val_loss',
-    #         'goal': 'minimize'   
-    #     },
-    #     'parameters': {
-    #         'learning_rate': {
-    #             'distribution': 'log_uniform_values',
-    #             'min': 1e-6,
-    #             'max': 1e-3
-    #         },
-    #         'weight_decay': {
-    #             'distribution': 'uniform',
-    #             'min': 0.0,
-    #             'max': 0.1
-    #         },
-    #         'batch_size': {
-    #             'values': [16, 32, 64]
-    #         },
-    #         'beta1': {
-    #             'values': [0.9, 0.95]
-    #         },
-    #         'beta2': {
-    #             'values': [0.99, 0.999]
-    #         },
-    #         'early_stopping_patience': {
-    #             'value': 5
-    #         }
-    #     }
-    # }
-
     sweep_config = {
-    'method': 'grid',  # Changed to grid to run this specific configuration once
-    'metric': {
-        'name': 'val_loss',
-        'goal': 'minimize'   
-    },
-    'parameters': {
-        'learning_rate': {
-            'value': 0.00001935262894891232  # Exact best learning rate
+        'method': 'bayes', # Bayesian optimization 
+        'metric': {
+            'name': 'val_loss',
+            'goal': 'minimize'   
         },
-        'weight_decay': {
-            'value': 0.056775318543155096    # Exact best weight decay
-        },
-        'batch_size': {
-            'value': 32
-        },
-        'beta1': {
-            'value': 0.95
-        },
-        'beta2': {
-            'value': 0.99
-        },
-        'early_stopping_patience': {
-            'value': 5
+        'parameters': {
+            'learning_rate': {
+                'distribution': 'log_uniform_values',
+                'min': 1e-6,
+                'max': 1e-3
+            },
+            'weight_decay': {
+                'distribution': 'uniform',
+                'min': 0.0,
+                'max': 0.1
+            },
+            'batch_size': {
+                'values': [16, 32, 64]
+            },
+            'beta1': {
+                'values': [0.9, 0.95]
+            },
+            'beta2': {
+                'values': [0.99, 0.999]
+            },
+            'early_stopping_patience': {
+                'value': 5
+            }
         }
     }
-    }
-    # # Best Hyper Param-Setting - dauntless-sweep-15
-    #     batch_size:32
-    #     beta1:0.95
-    #     beta2:0.99
-    #     early_stopping_patience:5
-    #     learning_rate:0.00001935262894891232
-    #     weight_decay:0.056775318543155096
 
-    # # Best Summary metrics for above Hyperparameters setting
-    # {
-    #     "_step": 33,
-    #     "epoch": 34,
-    #     "_wandb.runtime": 98,
-    #     "val_auc": 0.7982466971231016,
-    #     "_runtime": 98,
-    #     "val_loss": 0.5442327558994293,
-    #     "_timestamp": 1784202666.857404,
-    #     "train_loss": 0.4139233272184025,
-    #     "val_recall": 63.73626373626373,
-    #     "val_accuracy": 69.44444444444444,
-    #     "val_precision": 72.5,
-    #     "train_accuracy": 81.5340909090909
-    # }
+
 
 
 
     # Initialize the sweep
-    # sweep_id = wandb.sweep(sweep_config, project="orbis-attention-probe")
+    sweep_id = wandb.sweep(sweep_config, project="orbis-attention-probe-mc")
     # Run the sweep agent (this will run train_linear_probe 20 times with different parameters)
-    # wandb.agent(sweep_id, function=train_linear_probe, count=20)
+    wandb.agent(sweep_id, function=train_linear_probe, count=20)
 
-
-    
-    sweep_id = wandb.sweep(sweep_config, project="orbis-attention-probe-weights")
-    wandb.agent(sweep_id, function=train_linear_probe, count=1)
 
     # # # Load your attention weights look-up map
     # attn_map = torch.load("best_val_attention_weights.pt")

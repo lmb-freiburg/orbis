@@ -104,6 +104,11 @@ class DoTAClipDataset(Dataset):
                 for i in range(anomaly_start, anomaly_start + raw_window, 2)
             ]
             anomaly_class_label = resolve_multiclass_label(anno, frames_meta, anomaly_start)
+            
+            # --- SKIP CONDITION FOR LABELS MAPPED TO 9 ---
+            if anomaly_class_label >= 9: #Class is Unknown
+                continue
+                
             if is_valid_clip(anomaly_clip):
                 self.samples.append({
                     'video_name': video_name,
@@ -149,7 +154,9 @@ class DoTAClipDataset(Dataset):
         # Apply max_samples cap BEFORE statistics calculation
         # ----------------------------------------------------
         if self.max_samples is not None:
-            self.samples = self.samples[:self.max_samples]
+            random.seed(43)
+            self.samples = random.sample(self.samples, self.max_samples)
+            # self.samples = self.samples[:self.max_samples]
 
         # Process multiclass labels maps (required internally regardless of mode)
         multiclass_labels = sorted({sample['class_label'] for sample in self.samples if sample['class_label'] is not None}, key=lambda value: str(value))

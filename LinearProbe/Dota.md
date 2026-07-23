@@ -8,3 +8,16 @@
 -> Number of Valid datapoints collected after data preprocessing - 4572 (non-OOD) + 4577 (OOD) \
 -> 80:20 split for train:val 
 ![alt text](dota.png)
+
+
+--- Multiclass Distribution (Capped at 4000 samples) ---
+ 0                    | ID: 0   | Count: 2008
+ 1                    | ID: 1   | Count: 42
+ 2                    | ID: 2   | Count: 316
+ 3                    | ID: 3   | Count: 356
+ 4                    | ID: 4   | Count: 199
+ 5                    | ID: 5   | Count: 806
+ 6                    | ID: 6   | Count: 52
+ 7                    | ID: 7   | Count: 46
+ 8                    | ID: 8   | Count: 175
+-------------------------------
