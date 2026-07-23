@@ -76,8 +76,8 @@ def train_linear_probe():
     print(f"Using device: {device}")
     
     # 2. Load Cached Data from Block 18
-    train_dataset = CachedFeatureDataset("./cached_features/train_block18_unpooled_mc.pt")
-    val_dataset = CachedFeatureDataset("./cached_features/val_block18_unpooled_mc.pt")
+    train_dataset = CachedFeatureDataset("./cached_features/train_block18_4000_unpooled_mc.pt")
+    val_dataset = CachedFeatureDataset("./cached_features/val_block18_4000_unpooled_mc.pt")
 
     print(f'------- Train: {len(train_dataset)} | Val: {len(val_dataset)} ---------')
     
@@ -199,10 +199,10 @@ def train_linear_probe():
             best_val_loss = avg_val_loss
             patience_counter = 0
             #Save the model state
-            torch.save(model.state_dict(), "best_attention_probe.pt")
+            torch.save(model.state_dict(), "best_attention_probe_mc.pt")
             
             # Save the attention weights for the validation set of this best epoch
-            torch.save(current_epoch_attention_weights, "best_val_attention_weights.pt")
+            torch.save(current_epoch_attention_weights, "best_val_attention_weights_mc.pt")
             print(">>> Saved new best model and attention weights! <<<")
         else:
             patience_counter += 1
@@ -250,7 +250,7 @@ if __name__ == "__main__":
 
 
     # Initialize the sweep
-    sweep_id = wandb.sweep(sweep_config, project="orbis-attention-probe-mc")
+    sweep_id = wandb.sweep(sweep_config, project="orbis-attention-probe-mc-4000")
     # Run the sweep agent (this will run train_linear_probe 20 times with different parameters)
     wandb.agent(sweep_id, function=train_linear_probe, count=20)
 

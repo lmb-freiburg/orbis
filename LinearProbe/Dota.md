@@ -21,3 +21,7 @@
  7                    | ID: 7   | Count: 46
  8                    | ID: 8   | Count: 175
 -------------------------------
+
+Multi Class 
+1. AUC Measure - ovr - One vs Rest
+2. Accruacy,Precision, Recall - 
