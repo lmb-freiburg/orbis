@@ -11,7 +11,7 @@
 
 
 --- Multiclass Distribution (Capped at 4000 samples) ---
- 0                    | ID: 0   | Count: 2008
+ 0                    | ID: 0   | Count: 2008 - ID
  1                    | ID: 1   | Count: 42
  2                    | ID: 2   | Count: 316
  3                    | ID: 3   | Count: 356
@@ -21,6 +21,9 @@
  7                    | ID: 7   | Count: 46
  8                    | ID: 8   | Count: 175
 -------------------------------
+Attention heatmaps:
+1. Min-max normalization to 0-1
+
 
 Multi Class 
 1. AUC Measure - ovr - One vs Rest

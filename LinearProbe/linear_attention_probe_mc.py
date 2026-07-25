@@ -250,19 +250,12 @@ if __name__ == "__main__":
 
 
     # Initialize the sweep
-    sweep_id = wandb.sweep(sweep_config, project="orbis-attention-probe-mc-4000")
-    # Run the sweep agent (this will run train_linear_probe 20 times with different parameters)
+    # sweep_id = wandb.sweep(sweep_config, project="orbis-attention-probe-mc-4000")
+    # # Run the sweep agent (this will run train_linear_probe 20 times with different parameters)
+    # wandb.agent(sweep_id, function=train_linear_probe, count=20)
+
+    sweep_id = wandb.sweep(sweep_config, project="orbis-attention-probe-mc-4000-besteval")
     wandb.agent(sweep_id, function=train_linear_probe, count=20)
 
-
-    # # # Load your attention weights look-up map
-    # attn_map = torch.load("best_val_attention_weights.pt")
-
-    # # Query weights for a specific target sequence ID
-    # my_sequence_id = "sequence_xyz_123" 
-    # weights = attn_map[my_sequence_id] # Tensors shape: [576]
-
-    # # Reshape back to spatial token map dimension (e.g., 24x24 if 576 tokens)
-    # spatial_weights = weights.reshape(18, 32)
 
 

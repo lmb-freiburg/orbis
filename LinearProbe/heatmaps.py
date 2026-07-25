@@ -34,75 +34,75 @@ def process_attention_map(attn_1d, img_bgr, W, H):
     # Convert BGR to RGB for matplotlib
     return cv2.cvtColor(heatmap_bgr, cv2.COLOR_BGR2RGB), cv2.cvtColor(overlay_bgr, cv2.COLOR_BGR2RGB)
 
-def generate_attention_heatmap(image_path, attn_tensor, save_path):
+def generate_comparative_attention_heatmap(img_path_good, attn_good, img_path_anom, attn_anom, save_path):
     """
-    Overlays multi-head attention tensors onto the original image.
-    Uses a GridSpec layout: 
-    - Row 0 (3 columns): Raw Image | Mean Pure Attention | Mean Overlay
-    - Row 1 (N columns): Pure attention for Head 1, 2, ..., N
-    - Row 2 (N columns): Overlay for Head 1, 2, ..., N
+    Creates a 2x5 grid comparing Good (Top) vs Anomalous (Bottom) for a single sequence.
+    Columns: Raw | Head 5 (Pure) | Head 5 (Overlay) | Mean (Pure) | Mean (Overlay)
     """
-    img = cv2.imread(image_path)
-    if img is None:
-        raise ValueError(f"Could not load image at {image_path}")
+    fig = plt.figure(figsize=(25, 10))
+    gs = gridspec.GridSpec(2, 5, figure=fig)
     
-    H, W, _ = img.shape
-    img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-
-    num_heads = attn_tensor.shape[0]
-    total_cols = num_heads * 3  
-    total_rows = 3
-    
-    fig = plt.figure(figsize=(6 * num_heads, 18))
-    gs = gridspec.GridSpec(total_rows, total_cols, figure=fig)
-    
-    mean_attn = attn_tensor.mean(dim=0)
-    mean_heat, mean_over = process_attention_map(mean_attn, img, W, H)
-    
-    ax_raw = fig.add_subplot(gs[0, 0:num_heads])
-    ax_raw.imshow(img_rgb)
-    ax_raw.set_title('Raw Image', fontsize=24, pad=20)
-    ax_raw.axis('off')
-    
-    ax_mean_heat = fig.add_subplot(gs[0, num_heads:2*num_heads])
-    ax_mean_heat.imshow(mean_heat)
-    ax_mean_heat.set_title('Mean Attention (Pure)', fontsize=24, pad=20)
-    ax_mean_heat.axis('off')
-    
-    ax_mean_over = fig.add_subplot(gs[0, 2*num_heads:3*num_heads])
-    ax_mean_over.imshow(mean_over)
-    ax_mean_over.set_title('Mean Attention (Overlay)', fontsize=24, pad=20)
-    ax_mean_over.axis('off')
-    
-    for head_idx in range(num_heads):
-        head_heat, head_over = process_attention_map(attn_tensor[head_idx], img, W, H)
+    def plot_row(row_idx, img_path, attn_tensor, prefix):
+        img = cv2.imread(img_path)
+        if img is None:
+            raise ValueError(f"Could not load image at {img_path}")
+            
+        H, W, _ = img.shape
+        img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         
-        col_start = head_idx * 3
-        col_end = (head_idx + 1) * 3
+        # Extract Head 5 (Index 4, assuming 0-indexed) and Mean
+        head5_attn = attn_tensor[4] 
+        mean_attn = attn_tensor.mean(dim=0)
         
-        ax_head_pure = fig.add_subplot(gs[1, col_start:col_end])
-        ax_head_pure.imshow(head_heat)
-        ax_head_pure.set_title(f'Head {head_idx+1}\nPure Attention', fontsize=18)
-        ax_head_pure.axis('off')
+        h5_heat, h5_over = process_attention_map(head5_attn, img, W, H)
+        mean_heat, mean_over = process_attention_map(mean_attn, img, W, H)
+        
+        # Col 0: Raw Image
+        ax = fig.add_subplot(gs[row_idx, 0])
+        ax.imshow(img_rgb)
+        ax.set_title(f'{prefix} - Raw', fontsize=20, pad=15)
+        ax.axis('off')
+        
+        # Col 1: Head 5 Pure Attention
+        ax = fig.add_subplot(gs[row_idx, 1])
+        ax.imshow(h5_heat)
+        ax.set_title(f'{prefix} - Head 5 (Pure)', fontsize=20, pad=15)
+        ax.axis('off')
+        
+        # Col 2: Head 5 Overlay
+        ax = fig.add_subplot(gs[row_idx, 2])
+        ax.imshow(h5_over)
+        ax.set_title(f'{prefix} - Head 5 (Overlay)', fontsize=20, pad=15)
+        ax.axis('off')
+        
+        # Col 3: Mean Pure Attention
+        ax = fig.add_subplot(gs[row_idx, 3])
+        ax.imshow(mean_heat)
+        ax.set_title(f'{prefix} - Mean (Pure)', fontsize=20, pad=15)
+        ax.axis('off')
+        
+        # Col 4: Mean Overlay
+        ax = fig.add_subplot(gs[row_idx, 4])
+        ax.imshow(mean_over)
+        ax.set_title(f'{prefix} - Mean (Overlay)', fontsize=20, pad=15)
+        ax.axis('off')
 
-        ax_head_over = fig.add_subplot(gs[2, col_start:col_end])
-        ax_head_over.imshow(head_over)
-        ax_head_over.set_title(f'Head {head_idx+1}\nOverlay', fontsize=18)
-        ax_head_over.axis('off')
+    # Plot Good on Top (Row 0), Anomalous on Bottom (Row 1)
+    plot_row(0, img_path_good, attn_good, "Good")
+    plot_row(1, img_path_anom, attn_anom, "Anomalous")
 
     plt.tight_layout()
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
     plt.savefig(save_path, bbox_inches='tight', dpi=150)
     plt.close(fig) 
-    print(f"Saved plot to {save_path}")
+    print(f"Saved comparative plot to {save_path}")
 
 # ==========================================
-# New Relative Sampling & Forward Pass Logic
+# Relative Sampling & Forward Pass Logic
 # ==========================================
 
 def load_orbis_model(exp_dir, config_path, ckpt_path, device):
     """Loads the base Orbis ViT model to extract unpooled latents."""
-    # Note: Replace `instantiate_from_config` with your actual import
     from util import instantiate_from_config 
     
     config_file = (Path(exp_dir) / config_path).resolve()
@@ -130,7 +130,7 @@ def sample_and_generate_relative_heatmaps(
     1. Randomly samples 10 sequences directly from DoTA sequence dir.
     2. Extracts both 'good' and 'anomalous' frames for each based on DoTA JSON.
     3. Runs them through Orbis -> Probe to extract live multi-head attention.
-    4. Saves heatmaps in target_dir/relative/.
+    4. Saves a single 2x5 comparative heatmap per sequence in target_dir/relative/.
     """
     
     print(f"--- Initializing Relative Heatmap Generation ({num_samples} sequences) ---")
@@ -151,7 +151,7 @@ def sample_and_generate_relative_heatmaps(
     
     # 2. Load Trained Linear Probe
     print("Loading Attention Probe...")
-    probe_model = AttentionProbe(input_dim=768, num_classes=2, num_heads=8).to(device) # Change num_classes to 18 if you moved to multi-class
+    probe_model = AttentionProbe(input_dim=768, num_classes=2, num_heads=8).to(device) 
     probe_model.load_state_dict(torch.load(probe_weights_path, map_location=device))
     probe_model.eval()
     
@@ -215,11 +215,12 @@ def sample_and_generate_relative_heatmaps(
             good_start = num_frames - raw_window
         good_indices = list(range(good_start, good_start + raw_window, 2))
         
-        # We will process both clips iteratively
         clips_to_process = {
-            "anomalous": anomaly_indices,
-            "good": good_indices
+            "good": good_indices,
+            "anomalous": anomaly_indices
         }
+        
+        sequence_data = {}
         
         for condition, indices in clips_to_process.items():
             clip_paths = [os.path.join(sequence_dir, frames_meta[i]['image_path'].replace('frames/', '')) for i in indices]
@@ -227,7 +228,7 @@ def sample_and_generate_relative_heatmaps(
             # Verify images exist
             if not all(os.path.exists(p) for p in clip_paths):
                 print(f"Skipping {video_name} ({condition}): Missing frame on disk.")
-                continue
+                break
                 
             # Load and Transform Frames
             frames = []
@@ -264,11 +265,22 @@ def sample_and_generate_relative_heatmaps(
                 # Squeeze to [8, 576]
                 final_attn_tensor = attn_weights.squeeze(0).squeeze(1).cpu() 
             
-            # Target frame for the heatmap is the *last* frame in the window (index 5)
-            target_image_path = clip_paths[-1]
-            save_path = os.path.join(relative_dir, f"{video_name}_{condition}.jpg")
+            # Target frame for the heatmap is the *last* frame in the window
+            sequence_data[condition] = {
+                "img_path": clip_paths[-1],
+                "attn_tensor": final_attn_tensor
+            }
             
-            generate_attention_heatmap(target_image_path, final_attn_tensor, save_path)
+        # If we successfully processed both Good and Anomalous clips, generate the combined plot
+        if "good" in sequence_data and "anomalous" in sequence_data:
+            save_path = os.path.join(relative_dir, f"{video_name}_comparison.jpg")
+            generate_comparative_attention_heatmap(
+                img_path_good=sequence_data["good"]["img_path"],
+                attn_good=sequence_data["good"]["attn_tensor"],
+                img_path_anom=sequence_data["anomalous"]["img_path"],
+                attn_anom=sequence_data["anomalous"]["attn_tensor"],
+                save_path=save_path
+            )
             
     # Clean up the hook
     hook_handle.remove()
