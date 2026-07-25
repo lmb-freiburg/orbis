@@ -39,6 +39,7 @@ annotations/
 results_pt/
 results/
 DoTA_pedestrian/
+DoTA_class/
 
 # Temporary / generated files
 *.tmp
