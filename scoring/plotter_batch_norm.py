@@ -66,9 +66,15 @@ def plot_and_overlay(
     device, 
     n_noise_samples=4, 
     z_vmax=3.0,
-    z_threshold=1.0  # Only show heatmap where Z >= 1.0 std dev
+    z_threshold=1.0,
+    use_minmax=False,
+    output_dir_override=None,
+    eps=1e-8
 ):
-    """Computes error map, normalizes with calib_stats, and plots masked heatmaps alongside raw target frame."""
+    """
+    Computes error map, normalizes with calib_stats, and plots heatmaps alongside raw target frame.
+    Layout Order: [Original Frame] -> [Avg Across t] -> [t1, t2, ...]
+    """
     paths = get_sorted_frame_paths(folder_path)
     window = load_clip_as_window(paths).unsqueeze(0).to(device)
     frame_rate = torch.full((1,), 5.0).to(device)
@@ -79,62 +85,86 @@ def plot_and_overlay(
     # 2. Load background target frame
     target_frame = load_target_frame(folder_path, frame_index=10, size=(512, 288))
     
-    output_dir = f"{RESULTS_DIR}/batch_norm/{clip_id}"
+    # 3. Handle output directory override
+    if output_dir_override:
+        output_dir = output_dir_override
+    else:
+        output_dir = f"{RESULTS_DIR}/batch_norm/{clip_id}"
     os.makedirs(output_dir, exist_ok=True)
 
-    # Columns: [Original Frame] + [t1, t2, ...] + [Avg Across t]
-    n_cols = len(t_grid) + 2
-    fig, axes = plt.subplots(1, n_cols, figsize=(3.5 * n_cols, 3))
-
-    # --- PANEL 1: Original Image ---
-    axes[0].imshow(target_frame)
-    axes[0].set_title("Original Frame")
-    axes[0].axis("off")
-
+    # 4. Standardize maps across all timesteps first
     z_maps_list = []
+    z_up_np_dict = {}
 
-    # --- PANELS 2..N: Individual t noise levels ---
-    for i, t_val in enumerate(t_grid):
+    for t_val in t_grid:
         raw_map = per_t_map[t_val]
-        
-        # Standardize (Z-score)
         z_map = normalize_map_with_calib(raw_map, t_val, calib_stats)
         z_maps_list.append(z_map)
         
         # Upsample to full image resolution [288, 512]
         z_map_4d = z_map.unsqueeze(0).unsqueeze(0).float()
         z_up = F.interpolate(z_map_4d, size=(288, 512), mode="bilinear", align_corners=False)
-        z_up_np = z_up.squeeze().cpu().numpy()
+        z_up_np_dict[t_val] = z_up.squeeze().cpu().numpy()
 
-        # Mask out values below threshold so background image is fully visible
-        z_masked = np.ma.masked_where(z_up_np < z_threshold, z_up_np)
-
-        ax_idx = i + 1
-        axes[ax_idx].imshow(target_frame)
-        im = axes[ax_idx].imshow(z_masked, cmap="jet", alpha=0.55, vmin=z_threshold, vmax=z_vmax)
-        axes[ax_idx].set_title(f"t={t_val} (Z-Score)")
-        axes[ax_idx].axis("off")
-
-    # --- FINAL PANEL: Average Across t ---
+    # Compute Average Z-map across all t
     z_map_avg = torch.stack(z_maps_list).mean(dim=0)
     z_map_avg_4d = z_map_avg.unsqueeze(0).unsqueeze(0).float()
     z_up_avg = F.interpolate(z_map_avg_4d, size=(288, 512), mode="bilinear", align_corners=False)
     z_up_avg_np = z_up_avg.squeeze().cpu().numpy()
 
-    # Mask average map
-    z_avg_masked = np.ma.masked_where(z_up_avg_np < z_threshold, z_up_avg_np)
+    # Columns: [Original Frame] + [Avg Across t] + [t1, t2, ...]
+    n_cols = len(t_grid) + 2
+    fig, axes = plt.subplots(1, n_cols, figsize=(3.5 * n_cols, 3))
 
-    axes[-1].imshow(target_frame)
-    im = axes[-1].imshow(z_avg_masked, cmap="jet", alpha=0.6, vmin=z_threshold, vmax=z_vmax)
-    axes[-1].set_title("Avg Across t")
-    axes[-1].axis("off")
+    axes[0].imshow(target_frame)
+    axes[0].set_title("Original Frame")
+    axes[0].axis("off")
 
-    # Colorbar and layout adjustment
-    cbar = fig.colorbar(im, ax=axes, orientation="vertical", fraction=0.012, pad=0.02)
-    cbar.set_label("Std Deviations ($\sigma$)", fontsize=10)
-    fig.suptitle(f"{clip_id} ({sample_label}) — Calibrated Surprise Heatmap", fontsize=13)
+    if use_minmax:
+        avg_min, avg_max = z_up_avg_np.min(), z_up_avg_np.max()
+        z_avg_proc = (z_up_avg_np - avg_min) / (avg_max - avg_min + eps)
+        z_avg_masked = np.ma.masked_where(z_avg_proc < 0.2, z_avg_proc)
+        cbar_label = "Relative Intensity [0, 1]"
+        curr_vmin, curr_vmax = 0.2, 1.0
+    else:
+        z_avg_masked = np.ma.masked_where(z_up_avg_np < z_threshold, z_up_avg_np)
+        cbar_label = "Std Deviations ($\sigma$)"
+        curr_vmin, curr_vmax = z_threshold, z_vmax
+
+    axes[1].imshow(target_frame)
+    im_avg = axes[1].imshow(z_avg_masked, cmap="jet", alpha=0.6, vmin=curr_vmin, vmax=curr_vmax)
+    axes[1].set_title("Avg Across t", fontweight="bold")
+    axes[1].axis("off")
+
+    # --- PANELS 3..N: Individual t noise levels ---
+    for i, t_val in enumerate(t_grid):
+        z_up_np = z_up_np_dict[t_val]
+
+        if use_minmax:
+            z_min, z_max = z_up_np.min(), z_up_np.max()
+            z_proc = (z_up_np - z_min) / (z_max - z_min + eps)
+            z_masked = np.ma.masked_where(z_proc < 0.2, z_proc)
+            curr_vmin, curr_vmax = 0.2, 1.0
+            title_suffix = "(Min-Max)"
+        else:
+            z_masked = np.ma.masked_where(z_up_np < z_threshold, z_up_np)
+            curr_vmin, curr_vmax = z_threshold, z_vmax
+            title_suffix = ""
+
+        ax_idx = i + 2  # Offset by 2 (Original + Avg)
+        axes[ax_idx].imshow(target_frame)
+        im = axes[ax_idx].imshow(z_masked, cmap="jet", alpha=0.55, vmin=curr_vmin, vmax=curr_vmax)
+        axes[ax_idx].set_title(f"t={t_val} {title_suffix}".strip())
+        axes[ax_idx].axis("off")
+
+    # Colorbar attached to the summary map
+    cbar = fig.colorbar(im_avg, ax=axes, orientation="vertical", fraction=0.012, pad=0.02)
+    cbar.set_label(cbar_label, fontsize=10)
     
-    save_path = f"{output_dir}/overlay_{sample_label.lower()}.png"
+    mode_str = "MinMax" if use_minmax else "ZScore"
+    fig.suptitle(f"{clip_id} ({sample_label}) — Calibrated Heatmap [{mode_str}]", fontsize=13)
+    
+    save_path = f"{output_dir}/overlay_{sample_label.lower()}_{mode_str.lower()}.png"
     fig.savefig(save_path, dpi=200, bbox_inches="tight")
     plt.close(fig)
     print(f"Saved: {save_path}")
@@ -174,6 +204,7 @@ if __name__ == "__main__":
         t_grid=t_grid,
         calib_stats=calib_stats,
         device=device,
+        use_minmax=True,
         z_vmax=3.0,  # Max intensity scaling for matplotlib
     )
 
@@ -185,6 +216,7 @@ if __name__ == "__main__":
         sample_label="Anomaly",
         t_grid=t_grid,
         calib_stats=calib_stats,
+        use_minmax=True,
         device=device,
         z_vmax=3.0,
     )
