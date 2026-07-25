@@ -45,7 +45,7 @@ def load_clip_as_window(frame_paths, size=(512, 288)):
     return torch.stack(frames)
 
 
-# ---------- scorer: detailed and combined heads only ----------
+# ---------- scorer: detailed and combined heads only (MPS-optimized) ----------
 @torch.no_grad()
 def surprise_score_detailed_combined(model, images, frame_rate, t_grid, n_noise_samples=2, use_ema=False):
     net = model.ema_vit if use_ema else model.vit
@@ -65,13 +65,20 @@ def surprise_score_detailed_combined(model, images, frame_rate, t_grid, n_noise_
         "combined": {}
     }
 
+    is_mps = x.device.type == "mps"
+
     for t_val in t_grid:
         t = torch.full((b * n_noise_samples,), t_val, device=x.device)
         
         target_t, noise = model.add_noise(target_exp, t)
-        
         fr = frame_rate.repeat_interleave(n_noise_samples, dim=0) if frame_rate.numel() > 1 else frame_rate
-        pred = net(target_t, context_exp, t, frame_rate=fr)
+
+        # Autocast for FP16 speedup on MPS
+        if is_mps:
+            with torch.autocast(device_type="mps", dtype=torch.float16):
+                pred = net(target_t, context_exp, t, frame_rate=fr)
+        else:
+            pred = net(target_t, context_exp, t, frame_rate=fr)
         
         true_v = model.A(t) * target_exp + model.B(t) * noise
         
@@ -82,7 +89,7 @@ def surprise_score_detailed_combined(model, images, frame_rate, t_grid, n_noise_
         
         detailed_err = err_avg[:, :, :half]
         
-        # Mean across channels -> squeeze to [H, W] (B=1)
+        # Channel mean -> squeeze to [H, W] (assumes B=1)
         detailed_map = detailed_err.mean(dim=2).squeeze(0).squeeze(0)
         combined_map = err_avg.mean(dim=2).squeeze(0).squeeze(0)
 
@@ -92,13 +99,11 @@ def surprise_score_detailed_combined(model, images, frame_rate, t_grid, n_noise_
     return per_t_maps
 
 
-# ---------- Welford running mean/variance for multi-head metrics ----------
+# ---------- Welford running mean/variance ----------
 class MultiHeadWelfordAccumulator:
     def __init__(self, shape, t_grid, heads, device):
-        self.shape = shape
         self.t_grid = t_grid
         self.heads = heads
-        self.device = device
         self.n = {t: 0 for t in t_grid}
         
         self.mean = {h: {t: torch.zeros(shape, device=device) for t in t_grid} for h in heads}
@@ -115,20 +120,6 @@ class MultiHeadWelfordAccumulator:
             self.mean[h][t_val] += delta / n
             delta2 = new_map - self.mean[h][t_val]
             self.M2[h][t_val] += delta * delta2
-
-    def state_dict(self):
-        return {
-            "n": self.n,
-            "mean": {h: {t: self.mean[h][t].cpu() for t in self.t_grid} for h in self.heads},
-            "M2": {h: {t: self.M2[h][t].cpu() for t in self.t_grid} for h in self.heads},
-        }
-
-    def load_state_dict(self, state):
-        self.n = state["n"]
-        for h in self.heads:
-            for t in self.t_grid:
-                self.mean[h][t] = state["mean"][h][t].to(self.device)
-                self.M2[h][t] = state["M2"][h][t].to(self.device)
 
     def finalize(self, eps=1e-8):
         stats = {h: {} for h in self.heads}
@@ -158,8 +149,6 @@ if __name__ == "__main__":
     t_grid = [0.2, 0.4, 0.6, 0.8]
     N_NOISE_SAMPLES = 2
     HEADS = ["detailed", "combined"]
-    
-    CKPT_PATH = f"{RESULTS_DIR}/calib_checkpoint_det_comb.pt"
 
     with open("DoTA_prepared/manifest_subset1500.json") as f:
         manifest = json.load(f)
@@ -176,23 +165,10 @@ if __name__ == "__main__":
     print(f"Per-token map shape: {map_shape}")
 
     accumulator = MultiHeadWelfordAccumulator(map_shape, t_grid, HEADS, device)
-    processed_clips = set()
 
-    # Resume from checkpoint if it exists
-    if os.path.exists(CKPT_PATH):
-        print(f"Found checkpoint at {CKPT_PATH}! Resuming...")
-        ckpt = torch.load(CKPT_PATH, map_location="cpu")
-        accumulator.load_state_dict(ckpt["accumulator"])
-        processed_clips = set(ckpt["processed_clips"])
-        print(f"Resuming from clip {len(processed_clips)} / {len(manifest)}")
-
-    for clip in tqdm(manifest, desc="Processing calib clips"):
-        clip_id = clip["clip_id"]
+    for i, clip in enumerate(tqdm(manifest, desc="Processing calib clips")):
         if clip.get("non_ood_split") == "calib":
-            if clip_id in processed_clips:
-                continue
-
-            clip_dir = Path("DoTA_prepared") / clip_id
+            clip_dir = Path("DoTA_prepared") / clip["clip_id"]
             folder = str(clip_dir / "non-ood")
             
             paths = get_sorted_frame_paths(folder)
@@ -205,22 +181,11 @@ if __name__ == "__main__":
                 head_maps_at_t = {h: per_t_maps[h][t_val] for h in HEADS}
                 accumulator.update(t_val, head_maps_at_t)
 
-            processed_clips.add(clip_id)
+            # Periodically clear MPS cache every 50 iterations to avoid unified memory bloat
+            if device.type == "mps" and i % 50 == 0:
+                torch.mps.empty_cache()
 
-            # Periodic checkpointing
-            if len(processed_clips) % 50 == 0:
-                torch.save({
-                    "accumulator": accumulator.state_dict(),
-                    "processed_clips": list(processed_clips)
-                }, CKPT_PATH)
-
+    # Finalize and write ONLY at the very end
     calib_stats = accumulator.finalize()
-    
-    # Save detailed and combined separately
     torch.save(calib_stats, f"{RESULTS_DIR}/calib_stats_detailed_combined.pt")
-    
-    # Remove checkpoint on success
-    if os.path.exists(CKPT_PATH):
-        os.remove(CKPT_PATH)
-
-    print(f"Saved detailed and combined calibration stats (n={calib_stats['detailed'][t_grid[0]]['n']} samples)")
+    print(f"Saved detailed and combined stats to {RESULTS_DIR}/calib_stats_detailed_combined.pt (n={calib_stats['detailed'][t_grid[0]]['n']})")
