@@ -17,7 +17,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from util import instantiate_from_config
 
 RESULTS_DIR = "results_pt"
-os.makedirs(f"{RESULTS_DIR}", exist_ok=True)  # No longer need /samples
+os.makedirs(f"{RESULTS_DIR}", exist_ok=True)
 
 
 def get_device():
@@ -45,9 +45,9 @@ def load_clip_as_window(frame_paths, size=(512, 288)):
     return torch.stack(frames)
 
 
-# ---------- scorer: batched semantic stream, keeps full per-token map ----------
+# ---------- scorer: detailed and combined heads only ----------
 @torch.no_grad()
-def surprise_score_semantic(model, images, frame_rate, t_grid, n_noise_samples=2, use_ema=False):
+def surprise_score_detailed_combined(model, images, frame_rate, t_grid, n_noise_samples=2, use_ema=False):
     net = model.ema_vit if use_ema else model.vit
     net.eval()
     
@@ -57,69 +57,90 @@ def surprise_score_semantic(model, images, frame_rate, t_grid, n_noise_samples=2
     n_channels = target.shape[2]
     half = n_channels // 2
 
-    # Batch the noise samples to compute them in a single forward pass
-    # Shape expands from [B, ...] to [B * n_noise_samples, ...]
     context_exp = context.repeat_interleave(n_noise_samples, dim=0)
     target_exp = target.repeat_interleave(n_noise_samples, dim=0)
 
-    per_t_map = {}
+    per_t_maps = {
+        "detailed": {},
+        "combined": {}
+    }
 
     for t_val in t_grid:
         t = torch.full((b * n_noise_samples,), t_val, device=x.device)
         
         target_t, noise = model.add_noise(target_exp, t)
         
-        # Expand frame_rate if it is passed as a tensor matching batch size
         fr = frame_rate.repeat_interleave(n_noise_samples, dim=0) if frame_rate.numel() > 1 else frame_rate
-        # with torch.autocast(device_type="mps"):
         pred = net(target_t, context_exp, t, frame_rate=fr)
         
-        # Reshape A and B for broadcasting [B*N, 1, 1, 1, 1]
         true_v = model.A(t) * target_exp + model.B(t) * noise
         
         err = (pred.float() - true_v.float()) ** 2  # [B*N, 1, C, H, W]
         
-        # Reshape to average across the noise samples: [B, N, 1, C, H, W] -> [B, 1, C, H, W]
+        # Reshape and average across noise samples: [B, 1, C, H, W]
         err_avg = err.view(b, n_noise_samples, 1, n_channels, err.shape[-2], err.shape[-1]).mean(dim=1)
         
-        semantic_err = err_avg[:, :, half:]  # [B, 1, C/2, H, W]
+        detailed_err = err_avg[:, :, :half]
         
-        # [H, W], B=1 assumed. Keep on GPU for Welford Accumulator!
-        semantic_map = semantic_err.mean(dim=2).squeeze(0).squeeze(0) # should we take the mean or max across channels?
-        per_t_map[t_val] = semantic_map # [H, W] 
+        # Mean across channels -> squeeze to [H, W] (B=1)
+        detailed_map = detailed_err.mean(dim=2).squeeze(0).squeeze(0)
+        combined_map = err_avg.mean(dim=2).squeeze(0).squeeze(0)
 
-    return per_t_map
+        per_t_maps["detailed"][t_val] = detailed_map
+        per_t_maps["combined"][t_val] = combined_map
+
+    return per_t_maps
 
 
-# ---------- Welford running mean/variance, per-token, per t ----------
-class WelfordAccumulator:
-    def __init__(self, shape, t_grid, device):
+# ---------- Welford running mean/variance for multi-head metrics ----------
+class MultiHeadWelfordAccumulator:
+    def __init__(self, shape, t_grid, heads, device):
+        self.shape = shape
         self.t_grid = t_grid
+        self.heads = heads
+        self.device = device
         self.n = {t: 0 for t in t_grid}
-        # Keep on GPU to prevent sync bottlenecks
-        self.mean = {t: torch.zeros(shape, device=device) for t in t_grid}
-        self.M2 = {t: torch.zeros(shape, device=device) for t in t_grid}
+        
+        self.mean = {h: {t: torch.zeros(shape, device=device) for t in t_grid} for h in heads}
+        self.M2 = {h: {t: torch.zeros(shape, device=device) for t in t_grid} for h in heads}
 
-    def update(self, t_val, new_map):
-        """new_map: [H, W] tensor for this one sample, this one t."""
+    def update(self, t_val, head_maps):
+        """head_maps: dict mapping head_name -> [H, W] tensor for this sample and t."""
         self.n[t_val] += 1
         n = self.n[t_val]
-        delta = new_map - self.mean[t_val]
-        self.mean[t_val] += delta / n
-        delta2 = new_map - self.mean[t_val]
-        self.M2[t_val] += delta * delta2
+        
+        for h in self.heads:
+            new_map = head_maps[h]
+            delta = new_map - self.mean[h][t_val]
+            self.mean[h][t_val] += delta / n
+            delta2 = new_map - self.mean[h][t_val]
+            self.M2[h][t_val] += delta * delta2
+
+    def state_dict(self):
+        return {
+            "n": self.n,
+            "mean": {h: {t: self.mean[h][t].cpu() for t in self.t_grid} for h in self.heads},
+            "M2": {h: {t: self.M2[h][t].cpu() for t in self.t_grid} for h in self.heads},
+        }
+
+    def load_state_dict(self, state):
+        self.n = state["n"]
+        for h in self.heads:
+            for t in self.t_grid:
+                self.mean[h][t] = state["mean"][h][t].to(self.device)
+                self.M2[h][t] = state["M2"][h][t].to(self.device)
 
     def finalize(self, eps=1e-8):
-        """Returns {t_val: {"mean": [H,W], "std": [H,W], "n": int}} moved to CPU"""
-        stats = {}
-        for t_val in self.t_grid:
-            n = self.n[t_val]
-            var = self.M2[t_val] / max(n - 1, 1)  # sample variance
-            stats[t_val] = {
-                "mean": self.mean[t_val].cpu(),
-                "std": torch.sqrt(var + eps).cpu(),
-                "n": n,
-            }
+        stats = {h: {} for h in self.heads}
+        for h in self.heads:
+            for t_val in self.t_grid:
+                n = self.n[t_val]
+                var = self.M2[h][t_val] / max(n - 1, 1)
+                stats[h][t_val] = {
+                    "mean": self.mean[h][t_val].cpu(),
+                    "std": torch.sqrt(var + eps).cpu(),
+                    "n": n,
+                }
         return stats
 
 
@@ -136,38 +157,70 @@ if __name__ == "__main__":
 
     t_grid = [0.2, 0.4, 0.6, 0.8]
     N_NOISE_SAMPLES = 2
+    HEADS = ["detailed", "combined"]
+    
+    CKPT_PATH = f"{RESULTS_DIR}/calib_checkpoint_det_comb.pt"
 
     with open("DoTA_prepared/manifest_subset1500.json") as f:
         manifest = json.load(f)
 
-    # infer map shape from one sample first, so the accumulator is the right size
+    # Infer map shape from first sample
     first_clip = manifest[0]["clip_id"]
     first_folder = str(Path("DoTA_prepared") / first_clip / "non-ood")
-    probe_map = surprise_score_semantic(
+    probe_maps = surprise_score_detailed_combined(
         model,
         load_clip_as_window(get_sorted_frame_paths(first_folder)).unsqueeze(0).to(device),
         torch.full((1,), 5.0).to(device), t_grid, n_noise_samples=1,
     )
-    map_shape = probe_map[t_grid[0]].shape  # (H, W)
+    map_shape = probe_maps["detailed"][t_grid[0]].shape  # (H, W)
     print(f"Per-token map shape: {map_shape}")
 
-    accumulator = WelfordAccumulator(map_shape, t_grid, device)
+    accumulator = MultiHeadWelfordAccumulator(map_shape, t_grid, HEADS, device)
+    processed_clips = set()
+
+    # Resume from checkpoint if it exists
+    if os.path.exists(CKPT_PATH):
+        print(f"Found checkpoint at {CKPT_PATH}! Resuming...")
+        ckpt = torch.load(CKPT_PATH, map_location="cpu")
+        accumulator.load_state_dict(ckpt["accumulator"])
+        processed_clips = set(ckpt["processed_clips"])
+        print(f"Resuming from clip {len(processed_clips)} / {len(manifest)}")
 
     for clip in tqdm(manifest, desc="Processing calib clips"):
-        # We ONLY care about calib splits since we are skipping intermediate file writing
+        clip_id = clip["clip_id"]
         if clip.get("non_ood_split") == "calib":
-            clip_dir = Path("DoTA_prepared") / clip["clip_id"]
+            if clip_id in processed_clips:
+                continue
+
+            clip_dir = Path("DoTA_prepared") / clip_id
             folder = str(clip_dir / "non-ood")
             
             paths = get_sorted_frame_paths(folder)
             window = load_clip_as_window(paths).unsqueeze(0).to(device)
             frame_rate = torch.full((1,), 5.0).to(device)
             
-            per_t_map = surprise_score_semantic(model, window, frame_rate, t_grid, N_NOISE_SAMPLES)
+            per_t_maps = surprise_score_detailed_combined(model, window, frame_rate, t_grid, N_NOISE_SAMPLES)
             
             for t_val in t_grid:
-                accumulator.update(t_val, per_t_map[t_val])
+                head_maps_at_t = {h: per_t_maps[h][t_val] for h in HEADS}
+                accumulator.update(t_val, head_maps_at_t)
+
+            processed_clips.add(clip_id)
+
+            # Periodic checkpointing
+            if len(processed_clips) % 50 == 0:
+                torch.save({
+                    "accumulator": accumulator.state_dict(),
+                    "processed_clips": list(processed_clips)
+                }, CKPT_PATH)
 
     calib_stats = accumulator.finalize()
-    torch.save(calib_stats, f"{RESULTS_DIR}/calib_stats.pt")
-    print(f"Saved per-token calibration stats (n={calib_stats[t_grid[0]]['n']} calib samples)")
+    
+    # Save detailed and combined separately
+    torch.save(calib_stats, f"{RESULTS_DIR}/calib_stats_detailed_combined.pt")
+    
+    # Remove checkpoint on success
+    if os.path.exists(CKPT_PATH):
+        os.remove(CKPT_PATH)
+
+    print(f"Saved detailed and combined calibration stats (n={calib_stats['detailed'][t_grid[0]]['n']} samples)")
