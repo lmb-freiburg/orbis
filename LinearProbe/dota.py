@@ -8,8 +8,23 @@ from torchvision import transforms
 from PIL import Image
 from collections import Counter
 
+DOTA_CLASS_NAMES = {
+    0: "normal",
+    1: "start_stop_or_stationary",
+    2: "moving_ahead_or_waiting",
+    3: "lateral",
+    4: "oncoming",
+    5: "turning",
+    6: "pedestrian",
+    7: "obstacle",
+    8: "leave_to_right",
+    9: "leave_to_left",
+    10: "unknown",
+}
+
+
 class DoTAClipDataset(Dataset):
-    def __init__(self, sequence_dir, annotation_dir, transform=None, return_multiclass_labels=False, num_frames_per_clip=6, max_samples=None):
+    def __init__(self, sequence_dir, annotation_dir, transform=None, return_multiclass_labels=False, num_frames_per_clip=6, max_samples=None, skip_night=False):
         """
         Args:
             sequence_dir (str): Path to 'DoTA_Sequences' directory containing video folders.
@@ -18,12 +33,14 @@ class DoTAClipDataset(Dataset):
             return_multiclass_labels (bool): Whether to return detailed multiclass labels.
             num_frames_per_clip (int): Target number of frames to extract per clip.
             max_samples (int, optional): Cap the dataset size before calculating statistics.
+            skip_night (bool, optional): Skip samples where "night": true in annotations.
         """
         self.sequence_dir = sequence_dir
         self.transform = transform
         self.return_multiclass_labels = return_multiclass_labels
         self.num_frames_per_clip = num_frames_per_clip
         self.max_samples = max_samples
+        self.skip_night = skip_night
         self.samples = []
         self.class_to_idx = {}
 
@@ -37,7 +54,7 @@ class DoTAClipDataset(Dataset):
                 return None
 
             if isinstance(raw_label, int):
-                if 1 <= raw_label <= 18:
+                if 0 <= raw_label <= 18:
                     return raw_label
                 return 0
 
@@ -90,6 +107,9 @@ class DoTAClipDataset(Dataset):
             if (str(anno.get('ignore', 'false')).lower() != 'false') or anno.get('anomaly_start', -1) == -1:
                 continue
 
+            if self.skip_night and (str(anno.get('night', 'false')).lower() == 'true' or anno.get('night') is True):
+                continue
+
             num_frames = anno['num_frames']
             anomaly_start = anno['anomaly_start']
             anomaly_end = anno['anomaly_end']
@@ -105,8 +125,8 @@ class DoTAClipDataset(Dataset):
             ]
             anomaly_class_label = resolve_multiclass_label(anno, frames_meta, anomaly_start)
             
-            # --- SKIP CONDITION FOR LABELS MAPPED TO 9 ---
-            if anomaly_class_label >= 9: #Class is Unknown
+            # --- SKIP CONDITION FOR LABELS MAPPED TO UNKNOWN class ---
+            if anomaly_class_label > 9: #Class is Unknown
                 continue
                 
             if is_valid_clip(anomaly_clip):
@@ -180,12 +200,11 @@ class DoTAClipDataset(Dataset):
         if self.return_multiclass_labels:
             print(f"\n--- Multiclass Distribution (Capped at {len(self.samples)} samples) ---")
             valid_class_labels = [sample['class_label'] for sample in self.samples if sample['class_label'] is not None]
-            idx_to_class = {idx: name for name, idx in self.class_to_idx.items()}
             
             mc_counts = Counter(valid_class_labels)
             for class_idx, count in sorted(mc_counts.items()):
-                class_name = idx_to_class.get(class_idx, f"Class_{class_idx}")
-                print(f" {str(class_name):<20} | ID: {class_idx:<3} | Count: {count}")
+                class_name = DOTA_CLASS_NAMES.get(class_idx, f"Class_{class_idx}")
+                print(f" {str(class_name):<30} | ID: {class_idx:<3} | Count: {count}")
             print("-------------------------------\n")
         else:
             labels = [sample['label'] for sample in self.samples]
@@ -228,7 +247,7 @@ class DoTAClipDataset(Dataset):
         return clip_tensor, torch.tensor(label, dtype=torch.long), video_id
 
 
-def get_dota_dataloaders(sequence_dir, annotation_dir, batch_size=8, num_workers=4, max_samples=900, return_multiclass_labels=False, num_frames_per_clip=6):
+def get_dota_dataloaders(sequence_dir, annotation_dir, batch_size=8, num_workers=4, max_samples=None, return_multiclass_labels=False, num_frames_per_clip=6):
     """
     Initializes the dataset, splits it 80/20, empties target export directories, and returns Train/Val DataLoaders.
     """
@@ -319,7 +338,7 @@ if __name__ == "__main__":
     # Global Parameters
     TARGET_FRAMES = 6 
     RETURN_MULTICLASS = True  # <-- Toggle multiclass output here
-    MAX_SAMPLES = 900       # <-- Global control of the subset size
+    MAX_SAMPLES = None      # <-- Global control of the subset size
 
     print("Testing DoTA Dataset Pipeline...")
     

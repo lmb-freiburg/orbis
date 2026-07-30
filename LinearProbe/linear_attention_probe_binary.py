@@ -6,6 +6,26 @@ from torch.utils.data import Dataset, DataLoader
 from sklearn.metrics import accuracy_score, precision_score, recall_score, roc_auc_score, confusion_matrix
 import wandb # Added Weights & Biases
 
+try:
+    from dota import DOTA_CLASS_NAMES
+except ImportError:
+    try:
+        from LinearProbe.dota import DOTA_CLASS_NAMES
+    except ImportError:
+        DOTA_CLASS_NAMES = {
+            0: "normal",
+            1: "start_stop_or_stationary",
+            2: "moving_ahead_or_waiting",
+            3: "lateral",
+            4: "oncoming",
+            5: "turning",
+            6: "pedestrian",
+            7: "obstacle",
+            8: "leave_to_right",
+            9: "leave_to_left",
+            10: "unknown",
+        }
+
 class CachedFeatureDataset(Dataset):
     def __init__(self, cache_path):
         data = torch.load(cache_path)
@@ -143,7 +163,13 @@ def train_linear_probe():
             for batch_data in val_loader:
                 features = batch_data[0].to(device)
                 labels = batch_data[1].to(device)
-                video_ids = batch_data[-1]
+                if len(batch_data) == 4:
+                    mc_labels = batch_data[2]
+                    video_ids = batch_data[3]
+                else:
+                    mc_labels = None
+                    video_ids = batch_data[2]
+
                 outputs, attn_wts = model(features)
                 # Calculate Validation Loss for Early Stopping
                 val_loss = criterion(outputs, labels)
@@ -156,9 +182,28 @@ def train_linear_probe():
                 all_val_preds.extend(predicted.cpu().numpy())
                 all_val_probs.extend(probs.cpu().numpy())
 
-                # Extract and save attention map per sequence ID directly to files
+                # Extract and save attention map per sequence ID along with class ID, label, and prediction confidence
                 for i, id in enumerate(video_ids):
-                    current_epoch_attention_weights[id] = attn_wts[i].squeeze(1).cpu()
+                    if mc_labels is not None:
+                        class_id = int(mc_labels[i].item())
+                    else:
+                        class_id = int(labels[i].item())
+                    
+                    class_label = DOTA_CLASS_NAMES.get(class_id, f"Class_{class_id}")
+                    binary_label = int(labels[i].item())
+                    pred_label = int(predicted[i].item())
+                    prob_anom = float(probs[i].item())
+                    prob_true = prob_anom if binary_label == 1 else (1.0 - prob_anom)
+
+                    current_epoch_attention_weights[id] = {
+                        "attn_weights": attn_wts[i].squeeze(1).cpu(),
+                        "class_id": class_id,
+                        "class_label": class_label,
+                        "binary_label": binary_label,
+                        "pred_label": pred_label,
+                        "prob_anom": prob_anom,
+                        "prob_true": prob_true
+                    }
                 
         # 6. Calculate Metrics
         avg_val_loss = total_val_loss / len(val_loader)
@@ -198,6 +243,28 @@ def train_linear_probe():
             # Save the attention weights for the validation set of this best epoch
             torch.save(current_epoch_attention_weights, "best_val_attention_weights.pt")
             print(">>> Saved new best model and attention weights! <<<")
+
+            # Identify Worst Mistakes (lowest prob_true)
+            fps = [
+                (vid, info) for vid, info in current_epoch_attention_weights.items()
+                if info["binary_label"] == 0 and info["pred_label"] == 1
+            ]
+            fns = [
+                (vid, info) for vid, info in current_epoch_attention_weights.items()
+                if info["binary_label"] == 1 and info["pred_label"] == 0
+            ]
+            fps.sort(key=lambda x: x[1]["prob_true"]) # Lowest true prob (highest P(Anom) when Normal)
+            fns.sort(key=lambda x: x[1]["prob_true"]) # Lowest true prob (lowest P(Anom) when Anomalous)
+
+            print("\n--- WORST MISTAKES SUMMARY ---")
+            print("Top False Positives (Normal predicted as Anomalous with high confidence):")
+            for vid, info in fps[:5]:
+                print(f"  - Video: {vid} | P(Anomalous): {info['prob_anom']:.4f} | True Class: {info['class_label']} (ID: {info['class_id']})")
+
+            print("Top False Negatives (Anomalous predicted as Normal with high confidence):")
+            for vid, info in fns[:5]:
+                print(f"  - Video: {vid} | P(Anomalous): {info['prob_anom']:.4f} | True Class: {info['class_label']} (ID: {info['class_id']})")
+            print("-------------------------------\n")
         else:
             patience_counter += 1
             print(f"Early Stopping Counter: {patience_counter} / {patience}")

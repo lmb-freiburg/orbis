@@ -47,21 +47,11 @@ data:
       params:
         num_frames: 5
         image_paths:
-        # - imgs/example/frame_0000.jpg
-        # - imgs/example/frame_0001.jpg
-        # - imgs/example/frame_0002.jpg
-        # - imgs/example/frame_0003.jpg
-        # - imgs/example/frame_0004.jpg
-        # - ../carla_wildlife_sequences/raw_data/sequence_019/000045_raw_data.png
-        # - ../carla_wildlife_sequences/raw_data/sequence_019/000046_raw_data.png
-        # - ../carla_wildlife_sequences/raw_data/sequence_019/000047_raw_data.png
-        # - ../carla_wildlife_sequences/raw_data/sequence_019/000048_raw_data.png
-        # - ../carla_wildlife_sequences/raw_data/sequence_019/000049_raw_data.png
-        - ../DOTA_sequences/3sGShQb_HwU_000264/images/000036.jpg
-        - ../DOTA_sequences/3sGShQb_HwU_000264/images/000038.jpg
-        - ../DOTA_sequences/3sGShQb_HwU_000264/images/000040.jpg
-        - ../DOTA_sequences/3sGShQb_HwU_000264/images/000042.jpg
-        - ../DOTA_sequences/3sGShQb_HwU_000264/images/000044.jpg
+        - imgs/example/frame_0000.jpg
+        - imgs/example/frame_0001.jpg
+        - imgs/example/frame_0002.jpg
+        - imgs/example/frame_0003.jpg
+        - imgs/example/frame_0004.jpg
         size:
         - 288
         - 512

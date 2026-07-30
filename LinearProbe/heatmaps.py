@@ -17,6 +17,26 @@ sys.path.append(str(Path(__file__).resolve().parents[1])) # Uncomment if needed
 from util import instantiate_from_config
 from linear_attention_probe_binary import AttentionProbe # Assuming this is the name of your probe file
 
+try:
+    from dota import DOTA_CLASS_NAMES
+except ImportError:
+    try:
+        from LinearProbe.dota import DOTA_CLASS_NAMES
+    except ImportError:
+        DOTA_CLASS_NAMES = {
+            0: "normal",
+            1: "start_stop_or_stationary",
+            2: "moving_ahead_or_waiting",
+            3: "lateral",
+            4: "oncoming",
+            5: "turning",
+            6: "pedestrian",
+            7: "obstacle",
+            8: "leave_to_right",
+            9: "leave_to_left",
+            10: "unknown",
+        }
+
 def process_attention_map(attn_1d, img_bgr, W, H):
     """Helper function to normalize, resize, and overlay a single attention tensor."""
     attn_2d = attn_1d.reshape(18, 32).numpy()
@@ -34,15 +54,42 @@ def process_attention_map(attn_1d, img_bgr, W, H):
     # Convert BGR to RGB for matplotlib
     return cv2.cvtColor(heatmap_bgr, cv2.COLOR_BGR2RGB), cv2.cvtColor(overlay_bgr, cv2.COLOR_BGR2RGB)
 
-def generate_comparative_attention_heatmap(img_path_good, attn_good, img_path_anom, attn_anom, save_path):
+def generate_comparative_attention_heatmap(
+    img_path_good, 
+    attn_good, 
+    img_path_anom, 
+    attn_anom, 
+    save_path,
+    class_id_good=0,
+    class_label_good="normal",
+    class_id_anom=None,
+    class_label_anom=None,
+    video_name=None
+):
     """
     Creates a 2x5 grid comparing Good (Top) vs Anomalous (Bottom) for a single sequence.
     Columns: Raw | Head 5 (Pure) | Head 5 (Overlay) | Mean (Pure) | Mean (Overlay)
+    Displays Class ID and Class Label on the plots.
     """
+    # Extract tensor, class_id, class_label if passed as a dictionary (e.g. from saved weights file)
+    if isinstance(attn_good, dict):
+        if 'class_id' in attn_good:
+            class_id_good = attn_good.get('class_id', class_id_good)
+        if 'class_label' in attn_good:
+            class_label_good = attn_good.get('class_label', class_label_good)
+        attn_good = attn_good['attn_weights']
+
+    if isinstance(attn_anom, dict):
+        if 'class_id' in attn_anom:
+            class_id_anom = attn_anom.get('class_id', class_id_anom)
+        if 'class_label' in attn_anom:
+            class_label_anom = attn_anom.get('class_label', class_label_anom)
+        attn_anom = attn_anom['attn_weights']
+
     fig = plt.figure(figsize=(25, 10))
     gs = gridspec.GridSpec(2, 5, figure=fig)
     
-    def plot_row(row_idx, img_path, attn_tensor, prefix):
+    def plot_row(row_idx, img_path, attn_tensor, prefix, class_id=None, class_label=None):
         img = cv2.imread(img_path)
         if img is None:
             raise ValueError(f"Could not load image at {img_path}")
@@ -50,6 +97,17 @@ def generate_comparative_attention_heatmap(img_path_good, attn_good, img_path_an
         H, W, _ = img.shape
         img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         
+        # Build class label string
+        label_info = ""
+        if class_id is not None and class_label is not None:
+            label_info = f" [Class {class_id}: {class_label}]"
+        elif class_label is not None:
+            label_info = f" [{class_label}]"
+        elif class_id is not None:
+            label_info = f" [Class ID: {class_id}]"
+
+        row_title_prefix = f"{prefix}{label_info}"
+
         # Extract Head 5 (Index 4, assuming 0-indexed) and Mean
         head5_attn = attn_tensor[4] 
         mean_attn = attn_tensor.mean(dim=0)
@@ -60,36 +118,47 @@ def generate_comparative_attention_heatmap(img_path_good, attn_good, img_path_an
         # Col 0: Raw Image
         ax = fig.add_subplot(gs[row_idx, 0])
         ax.imshow(img_rgb)
-        ax.set_title(f'{prefix} - Raw', fontsize=20, pad=15)
+        ax.set_title(f'{row_title_prefix} - Raw', fontsize=16, pad=15)
         ax.axis('off')
         
         # Col 1: Head 5 Pure Attention
         ax = fig.add_subplot(gs[row_idx, 1])
         ax.imshow(h5_heat)
-        ax.set_title(f'{prefix} - Head 5 (Pure)', fontsize=20, pad=15)
+        ax.set_title(f'{row_title_prefix} - Head 5 (Pure)', fontsize=16, pad=15)
         ax.axis('off')
         
         # Col 2: Head 5 Overlay
         ax = fig.add_subplot(gs[row_idx, 2])
         ax.imshow(h5_over)
-        ax.set_title(f'{prefix} - Head 5 (Overlay)', fontsize=20, pad=15)
+        ax.set_title(f'{row_title_prefix} - Head 5 (Overlay)', fontsize=16, pad=15)
         ax.axis('off')
         
         # Col 3: Mean Pure Attention
         ax = fig.add_subplot(gs[row_idx, 3])
         ax.imshow(mean_heat)
-        ax.set_title(f'{prefix} - Mean (Pure)', fontsize=20, pad=15)
+        ax.set_title(f'{row_title_prefix} - Mean (Pure)', fontsize=16, pad=15)
         ax.axis('off')
         
         # Col 4: Mean Overlay
         ax = fig.add_subplot(gs[row_idx, 4])
         ax.imshow(mean_over)
-        ax.set_title(f'{prefix} - Mean (Overlay)', fontsize=20, pad=15)
+        ax.set_title(f'{row_title_prefix} - Mean (Overlay)', fontsize=16, pad=15)
         ax.axis('off')
 
     # Plot Good on Top (Row 0), Anomalous on Bottom (Row 1)
-    plot_row(0, img_path_good, attn_good, "Good")
-    plot_row(1, img_path_anom, attn_anom, "Anomalous")
+    plot_row(0, img_path_good, attn_good, "Good", class_id=class_id_good, class_label=class_label_good)
+    plot_row(1, img_path_anom, attn_anom, "Anomalous", class_id=class_id_anom, class_label=class_label_anom)
+
+    suptitle_parts = []
+    if video_name:
+        suptitle_parts.append(f"Sequence: {video_name}")
+    if class_id_anom is not None and class_label_anom is not None:
+        suptitle_parts.append(f"Anomaly Class ID {class_id_anom}: {class_label_anom}")
+    elif class_id_anom is not None:
+        suptitle_parts.append(f"Anomaly Class ID: {class_id_anom}")
+
+    if suptitle_parts:
+        fig.suptitle(" | ".join(suptitle_parts), fontsize=20, y=0.99)
 
     plt.tight_layout()
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
@@ -273,13 +342,44 @@ def sample_and_generate_relative_heatmaps(
             
         # If we successfully processed both Good and Anomalous clips, generate the combined plot
         if "good" in sequence_data and "anomalous" in sequence_data:
+            # Extract class ID and label for anomalous clip from annotation JSON
+            anom_class_id = None
+            for key in ('accident_id', 'accident_name'):
+                if key in anno and anno[key] is not None:
+                    try:
+                        anom_class_id = int(anno[key])
+                        break
+                    except (ValueError, TypeError):
+                        pass
+            if anom_class_id is None:
+                for f_meta in anno.get('labels', []):
+                    for key in ('accident_id', 'accident_name'):
+                        if key in f_meta and f_meta[key] is not None:
+                            try:
+                                anom_class_id = int(f_meta[key])
+                                break
+                            except (ValueError, TypeError):
+                                pass
+                    if anom_class_id is not None:
+                        break
+
+            if anom_class_id is None:
+                anom_class_id = 0
+
+            anom_class_label = DOTA_CLASS_NAMES.get(anom_class_id, f"Class_{anom_class_id}")
+
             save_path = os.path.join(relative_dir, f"{video_name}_comparison.jpg")
             generate_comparative_attention_heatmap(
                 img_path_good=sequence_data["good"]["img_path"],
                 attn_good=sequence_data["good"]["attn_tensor"],
                 img_path_anom=sequence_data["anomalous"]["img_path"],
                 attn_anom=sequence_data["anomalous"]["attn_tensor"],
-                save_path=save_path
+                save_path=save_path,
+                class_id_good=0,
+                class_label_good="normal",
+                class_id_anom=anom_class_id,
+                class_label_anom=anom_class_label,
+                video_name=video_name
             )
             
     # Clean up the hook
@@ -287,23 +387,181 @@ def sample_and_generate_relative_heatmaps(
     print("\n--- Relative Heatmap Generation Complete ---")
 
 
+def generate_heatmaps_from_saved_weights(
+    weights_path="best_val_attention_weights.pt",
+    sequence_dir="../DoTA_sequences",
+    output_dir="./attention_heatmaps_saved",
+    num_worst_fp=5,
+    num_worst_fn=5,
+    only_worst_mistakes=True
+):
+    """
+    Generates multi-head attention heatmap plots directly from saved attention weights (e.g., best_val_attention_weights.pt).
+    Displays ALL 8 separated attention heads + Mean attention overlay for each of the worst predicted cases (False Positives & False Negatives).
+    """
+    if not os.path.exists(weights_path):
+        print(f"Weights file not found: {weights_path}")
+        return
+
+    attn_map = torch.load(weights_path)
+    print(f"Loaded {len(attn_map)} sequence attention weights from {weights_path}")
+
+    fps = []
+    fns = []
+
+    for video_id, data in attn_map.items():
+        if isinstance(data, dict):
+            binary_label = data.get('binary_label')
+            pred_label = data.get('pred_label')
+
+            if binary_label is not None and pred_label is not None and binary_label != pred_label:
+                if binary_label == 0 and pred_label == 1:
+                    fps.append((video_id, data))
+                elif binary_label == 1 and pred_label == 0:
+                    fns.append((video_id, data))
+
+    # Sort mistakes by lowest true class probability (highest confidence mistake)
+    if fps:
+        fps.sort(key=lambda x: x[1].get('prob_true', 1.0 - x[1].get('prob_anom', 0.0)))
+    if fns:
+        fns.sort(key=lambda x: x[1].get('prob_true', x[1].get('prob_anom', 1.0)))
+
+    target_samples = []
+    if only_worst_mistakes:
+        print(f"Found {len(fps)} False Positives and {len(fns)} False Negatives.")
+        print(f"Extracting Top {min(num_worst_fp, len(fps))} Worst FPs and Top {min(num_worst_fn, len(fns))} Worst FNs...")
+        for vid, data in fps[:num_worst_fp]:
+            target_samples.append((vid, data, "FP"))
+        for vid, data in fns[:num_worst_fn]:
+            target_samples.append((vid, data, "FN"))
+
+    if not target_samples:
+        print("No worst mistake entries found or only_worst_mistakes is False. Processing standard samples...")
+        for vid, data in list(attn_map.items())[:10]:
+            target_samples.append((vid, data, "SAMPLE"))
+
+    os.makedirs(output_dir, exist_ok=True)
+
+    for video_id, data, category in target_samples:
+        if isinstance(data, dict):
+            attn_weights = data['attn_weights']  # Shape: [8, 576]
+            class_id = data.get('class_id')
+            class_label = data.get('class_label', 'Unknown')
+            prob_anom = data.get('prob_anom')
+        else:
+            attn_weights = data
+            class_id = None
+            class_label = "Unknown"
+            prob_anom = None
+
+        # Resolve video folder path
+        video_name = video_id.rsplit('_', 2)[0] if '_' in video_id else video_id
+        video_folder = os.path.join(sequence_dir, video_name, 'images')
+        
+        if not os.path.exists(video_folder):
+            video_folder = os.path.join(sequence_dir, video_id, 'images')
+            if not os.path.exists(video_folder):
+                print(f"Warning: Image folder for {video_id} not found at {video_folder}")
+                continue
+
+        frame_files = sorted([f for f in os.listdir(video_folder) if f.endswith(('.jpg', '.png'))])
+        if not frame_files:
+            continue
+
+        target_img_path = os.path.join(video_folder, frame_files[-1])
+        img = cv2.imread(target_img_path)
+        if img is None:
+            continue
+        H, W, _ = img.shape
+        img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+
+        # Plot 2x5 Grid: Raw Image, Mean Attention, and all 8 Heads individually
+        fig = plt.figure(figsize=(25, 10))
+        gs = gridspec.GridSpec(2, 5, figure=fig)
+
+        # Row 0, Col 0: Raw RGB Image
+        ax = fig.add_subplot(gs[0, 0])
+        ax.imshow(img_rgb)
+        ax.set_title("Raw Image", fontsize=16, pad=12, fontweight='bold')
+        ax.axis('off')
+
+        # Row 0, Cols 1 to 4: Heads 1, 2, 3, 4
+        num_heads = attn_weights.shape[0] if attn_weights.dim() > 1 else 8
+        for h in range(min(4, num_heads)):
+            head_attn = attn_weights[h]
+            _, overlay = process_attention_map(head_attn, img, W, H)
+            ax = fig.add_subplot(gs[0, h + 1])
+            ax.imshow(overlay)
+            ax.set_title(f"Head {h + 1}", fontsize=16, pad=12)
+            ax.axis('off')
+
+        # Row 1, Col 0: Mean Attention Across All Heads
+        mean_attn = attn_weights.mean(dim=0) if attn_weights.dim() > 1 else attn_weights
+        _, mean_overlay = process_attention_map(mean_attn, img, W, H)
+        ax = fig.add_subplot(gs[1, 0])
+        ax.imshow(mean_overlay)
+        ax.set_title("Mean Attention (All Heads)", fontsize=16, pad=12, fontweight='bold')
+        ax.axis('off')
+
+        # Row 1, Cols 1 to 4: Heads 5, 6, 7, 8
+        for h in range(4, min(8, num_heads)):
+            head_attn = attn_weights[h]
+            _, overlay = process_attention_map(head_attn, img, W, H)
+            ax = fig.add_subplot(gs[1, h - 3])
+            ax.imshow(overlay)
+            ax.set_title(f"Head {h + 1}", fontsize=16, pad=12)
+            ax.axis('off')
+
+        # Header Title detailing worst case & probability
+        if category == "FP":
+            prob_str = f" | P(Anomalous)={prob_anom:.4f}" if prob_anom is not None else ""
+            header_str = f"[WORST FALSE POSITIVE] Video: {video_id} | Class: {class_label} (ID: {class_id}){prob_str}"
+        elif category == "FN":
+            prob_str = f" | P(Anomalous)={prob_anom:.4f}" if prob_anom is not None else ""
+            header_str = f"[WORST FALSE NEGATIVE] Video: {video_id} | Class: {class_label} (ID: {class_id}){prob_str}"
+        else:
+            label_str = f" [Class {class_id}: {class_label}]" if class_id is not None and class_label is not None else ""
+            header_str = f"Video: {video_id}{label_str}"
+
+        fig.suptitle(header_str, fontsize=18, y=1.02, fontweight='bold')
+        plt.tight_layout()
+
+        save_filename = f"{category}_{video_id}_heatmap.jpg" if category != "SAMPLE" else f"{video_id}_heatmap.jpg"
+        save_path = os.path.join(output_dir, save_filename)
+        plt.savefig(save_path, bbox_inches='tight', dpi=150)
+        plt.close(fig)
+        print(f"Saved attention heatmap for [{category}] {video_id} to {save_path}")
+
+    print(f"\nCompleted generating heatmaps in: {output_dir}")
+
+
 # ==========================================
-# Example Usage:
+# Execution Entry Point:
 # ==========================================
 if __name__ == "__main__":
     
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
-    
-    # Call the new function
-    sample_and_generate_relative_heatmaps(
+
+    # Commented out relative heatmaps call without overwriting:
+    # sample_and_generate_relative_heatmaps(
+    #     sequence_dir="../DoTA_sequences",
+    #     annotation_dir="../DOTA_annotations",
+    #     orbis_exp_dir="./logs_wm/orbis_288x512",
+    #     orbis_config_path="config.yaml",
+    #     orbis_ckpt_path="checkpoints/last.ckpt",
+    #     probe_weights_path="best_attention_probe.pt", # Path to your saved probe state dict
+    #     base_output_dir="./attention_heatmaps",
+    #     device=DEVICE,
+    #     num_samples=10,
+    #     num_frames_per_clip=6
+    # )
+
+    # Call generate_heatmaps_from_saved_weights:
+    generate_heatmaps_from_saved_weights(
+        weights_path="best_val_attention_weights.pt",
         sequence_dir="../DoTA_sequences",
-        annotation_dir="../DOTA_annotations",
-        orbis_exp_dir="./logs_wm/orbis_288x512",
-        orbis_config_path="config.yaml",
-        orbis_ckpt_path="checkpoints/last.ckpt",
-        probe_weights_path="best_attention_probe.pt", # Path to your saved probe state dict
-        base_output_dir="./attention_heatmaps",
-        device=DEVICE,
-        num_samples=10,
-        num_frames_per_clip=6
+        output_dir="./attention_heatmaps_saved",
+        num_worst_fp=5,
+        num_worst_fn=5,
+        only_worst_mistakes=True
     )

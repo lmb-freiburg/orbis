@@ -10,6 +10,20 @@
 ![alt text](dota.png)
 
 
+-> Total sample count after ignoring invalid samples and samples with 'night' flag
+--- Multiclass Distribution (Capped at 8922 samples) ---
+ normal                         | ID: 0   | Count: 4455
+ start_stop_or_stationary       | ID: 1   | Count: 91
+ moving_ahead_or_waiting        | ID: 2   | Count: 655
+ lateral                        | ID: 3   | Count: 712
+ oncoming                       | ID: 4   | Count: 446
+ turning                        | ID: 5   | Count: 1658
+ pedestrian                     | ID: 6   | Count: 97
+ obstacle                       | ID: 7   | Count: 91
+ leave_to_right                 | ID: 8   | Count: 353
+ leave_to_left                  | ID: 9   | Count: 364
+-------------------------------
+
 --- Multiclass Distribution (Capped at 4000 samples) ---
  0                    | ID: 0   | Count: 2008 - ID
  1                    | ID: 1   | Count: 42
