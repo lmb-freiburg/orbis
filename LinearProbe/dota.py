@@ -134,7 +134,8 @@ class DoTAClipDataset(Dataset):
                     'video_name': video_name,
                     'clip_paths': anomaly_clip,
                     'label': 1,
-                    'class_label': anomaly_class_label,
+                    'class_label': anomaly_class_label,        # Target multiclass label (1..9)
+                    'source_class_label': anomaly_class_label, # Source video sequence label
                     'clip_type': 'anomaly_start'
                 })
 
@@ -151,7 +152,8 @@ class DoTAClipDataset(Dataset):
                         'video_name': video_name,
                         'clip_paths': normal_clip,
                         'label': 0,
-                        'class_label': 0,
+                        'class_label': 0,                          # Target multiclass label: 0 ("normal")
+                        'source_class_label': anomaly_class_label, # Source video sequence label
                         'clip_type': 'video_start'
                     })
             elif (num_frames - raw_window) > anomaly_end:
@@ -166,7 +168,8 @@ class DoTAClipDataset(Dataset):
                         'video_name': video_name,
                         'clip_paths': normal_clip,
                         'label': 0,
-                        'class_label': 0,
+                        'class_label': 0,                          # Target multiclass label: 0 ("normal")
+                        'source_class_label': anomaly_class_label, # Source video sequence label
                         'clip_type': 'video_end'
                     })
 
@@ -227,6 +230,7 @@ class DoTAClipDataset(Dataset):
         label = sample['label']
         mc_label = sample.get('class_label', None)
         video_id = sample['video_name']
+        target_frame_id = os.path.basename(clip_paths[-1])
 
         frames = []
         for img_path in clip_paths:
@@ -240,11 +244,13 @@ class DoTAClipDataset(Dataset):
             
         clip_tensor = torch.stack(frames, dim=0).permute(1, 0, 2, 3)
 
+        source_mc_label = sample.get('source_class_label', mc_label)
         if self.return_multiclass_labels:
             mc_label_tensor = torch.tensor(-1 if mc_label is None else mc_label, dtype=torch.long)
-            return clip_tensor, torch.tensor(label, dtype=torch.long), mc_label_tensor, video_id
+            source_mc_label_tensor = torch.tensor(-1 if source_mc_label is None else source_mc_label, dtype=torch.long)
+            return clip_tensor, torch.tensor(label, dtype=torch.long), mc_label_tensor, source_mc_label_tensor, video_id, target_frame_id
 
-        return clip_tensor, torch.tensor(label, dtype=torch.long), video_id
+        return clip_tensor, torch.tensor(label, dtype=torch.long), video_id, target_frame_id
 
 
 def get_dota_dataloaders(sequence_dir, annotation_dir, batch_size=8, num_workers=4, max_samples=None, return_multiclass_labels=False, num_frames_per_clip=6):

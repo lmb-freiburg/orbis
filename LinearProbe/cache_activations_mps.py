@@ -60,6 +60,8 @@ def cache_features(model, dataloader, device, save_dir, split_name, checkpoint_i
     all_features = {name: [] for name in target_blocks.keys()}
     all_labels = []
     all_mc_labels = []
+    all_source_mc_labels = []
+    all_target_frame_ids = []
     all_video_ids = []
     
     os.makedirs(save_dir, exist_ok=True)
@@ -69,8 +71,26 @@ def cache_features(model, dataloader, device, save_dir, split_name, checkpoint_i
         for i, batch_data in enumerate(tqdm(dataloader)):
             clips = batch_data[0].to(device)
             labels = batch_data[1]
-            mc_labels = batch_data[2] if len(batch_data) > 2 else None
-            clip_ids = batch_data[-1]
+            if len(batch_data) == 6:
+                mc_labels = batch_data[2]
+                source_mc_labels = batch_data[3]
+                clip_ids = batch_data[4]
+                target_frame_ids = batch_data[5]
+            elif len(batch_data) == 5:
+                mc_labels = batch_data[2]
+                source_mc_labels = None
+                clip_ids = batch_data[3]
+                target_frame_ids = batch_data[4]
+            elif len(batch_data) == 4:
+                mc_labels = None
+                source_mc_labels = None
+                clip_ids = batch_data[2]
+                target_frame_ids = batch_data[3]
+            else:
+                mc_labels = None
+                source_mc_labels = None
+                clip_ids = batch_data[2]
+                target_frame_ids = [None] * len(clip_ids)
 
             if hasattr(model, "encode_frames") and hasattr(model, "vit"):
                 clips = clips.permute(0, 2, 1, 3, 4).contiguous()
@@ -98,29 +118,43 @@ def cache_features(model, dataloader, device, save_dir, split_name, checkpoint_i
             all_labels.append(labels.cpu())
             if mc_labels is not None:
                 all_mc_labels.append(mc_labels.cpu())
+            if source_mc_labels is not None:
+                all_source_mc_labels.append(source_mc_labels.cpu())
             all_video_ids.extend(clip_ids)
+            if isinstance(target_frame_ids, (list, tuple)):
+                all_target_frame_ids.extend(target_frame_ids)
 
             # 4. Incremental Caching checkpointing logic
             if (i + 1) % checkpoint_interval == 0:
                 print('Caching Checkpoint')
                 temp_labels = torch.cat(all_labels, dim=0)
                 temp_mc_labels = torch.cat(all_mc_labels, dim=0) if len(all_mc_labels) > 0 else None
+                temp_source_mc_labels = torch.cat(all_source_mc_labels, dim=0) if len(all_source_mc_labels) > 0 else None
                 
                 for name in target_blocks.keys():
-                    partial_save_path = os.path.join(save_dir, f"{split_name}_{name}_4000_unpooled_partial_mc.pt")
+                    partial_save_path = os.path.join(save_dir, f"{split_name}_{name}_900_unpooled_partial_mc.pt")
                     temp_features = torch.cat(all_features[name], dim=0)
                     
-                    if temp_mc_labels is None:
-                        torch.save({'features': temp_features, 'labels': temp_labels, 'video_ids': all_video_ids}, partial_save_path)
-                    else:
-                        torch.save({'features': temp_features, 'labels': temp_labels, 'mc_labels': temp_mc_labels, 'video_ids': all_video_ids}, partial_save_path)
-                    
+                    save_dict = {
+                        'features': temp_features,
+                        'labels': temp_labels,
+                        'video_ids': all_video_ids,
+                        'target_frame_ids': all_target_frame_ids
+                    }
+                    if temp_mc_labels is not None:
+                        save_dict['mc_labels'] = temp_mc_labels
+                    if temp_source_mc_labels is not None:
+                        save_dict['source_mc_labels'] = temp_source_mc_labels
+
+                    torch.save(save_dict, partial_save_path)
                     print(f'Saved checkpoint {i+1} in {partial_save_path}')
                     del temp_features
                 
                 del temp_labels
                 if temp_mc_labels is not None:
                     del temp_mc_labels
+                if temp_source_mc_labels is not None:
+                    del temp_source_mc_labels
 
     # Clean up all hooks
     for handle in hook_handles:
@@ -129,24 +163,32 @@ def cache_features(model, dataloader, device, save_dir, split_name, checkpoint_i
     # 5. Concatenate and save absolute final outputs for each block
     tensor_labels = torch.cat(all_labels, dim=0)
     tensor_mc_labels = torch.cat(all_mc_labels, dim=0) if len(all_mc_labels) > 0 else None
+    tensor_source_mc_labels = torch.cat(all_source_mc_labels, dim=0) if len(all_source_mc_labels) > 0 else None
     
     for name in target_blocks.keys():
-        final_save_path = os.path.join(save_dir, f"{split_name}_{name}_4000_unpooled_mc.pt")
-        partial_save_path = os.path.join(save_dir, f"{split_name}_{name}_4000_unpooled_partial_mc.pt")
+        final_save_path = os.path.join(save_dir, f"{split_name}_{name}_900_unpooled_mc.pt")
+        partial_save_path = os.path.join(save_dir, f"{split_name}_{name}_900_unpooled_partial_mc.pt")
         
         tensor_features = torch.cat(all_features[name], dim=0)
         
-        # Save using the concatenated tensor, NOT the list
-        if tensor_mc_labels is None:
-            torch.save({'features': tensor_features, 'labels': tensor_labels, 'video_ids': all_video_ids}, final_save_path)
-        else:
-            torch.save({'features': tensor_features, 'labels': tensor_labels, 'mc_labels': tensor_mc_labels, 'video_ids': all_video_ids}, final_save_path)
+        save_dict = {
+            'features': tensor_features,
+            'labels': tensor_labels,
+            'video_ids': all_video_ids,
+            'target_frame_ids': all_target_frame_ids
+        }
+        if tensor_mc_labels is not None:
+            save_dict['mc_labels'] = tensor_mc_labels
+        if tensor_source_mc_labels is not None:
+            save_dict['source_mc_labels'] = tensor_source_mc_labels
+
+        torch.save(save_dict, final_save_path)
         
         # Clean up partial file on complete run success
         if os.path.exists(partial_save_path):
             os.remove(partial_save_path)
             
-        print(f"Saved completed dataset to {final_save_path}: {tensor_features.shape[0]} clips with dimension {tensor_features.shape[1:]}")
+        print(f"Saved completed dataset to {final_save_path}: {tensor_features.shape[0]} clips with features {tensor_features.shape[1:]} and {len(all_target_frame_ids)} target_frame_ids")
 def parse_args():
     parser = argparse.ArgumentParser(description="Cache linear-probe features from a trained orbis checkpoint.")
     parser.add_argument("--exp_dir", type=str, default="./logs_wm/orbis_288x512")
@@ -164,7 +206,7 @@ def parse_args():
 if __name__ == "__main__":
     args = parse_args()
 
-    MAX_SAMPLES = 4000
+    MAX_SAMPLES = 900
     MULTI_CLASS = True
     
     if torch.backends.mps.is_available():

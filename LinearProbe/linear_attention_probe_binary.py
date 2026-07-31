@@ -32,18 +32,19 @@ class CachedFeatureDataset(Dataset):
         self.features = data['features']
         self.labels = data['labels'].long() 
         self.mc_labels = data['mc_labels'] if 'mc_labels' in data else None
+        self.source_mc_labels = data['source_mc_labels'] if 'source_mc_labels' in data else None
         self.video_ids = data['video_ids']
-        # If you saved IDs, you can also load self.ids = data['ids'] here
+        self.target_frame_ids = data['target_frame_ids'] if 'target_frame_ids' in data else [None] * len(self.video_ids)
         print(f'Loaded {cache_path} | Shape - {self.features.shape} , {self.labels.shape}')
         
     def __len__(self):
         return len(self.features)
 
     def __getitem__(self, idx):
-        # Add self.ids[idx] here if you added IDs to your caching script!
-        if self.mc_labels is None:
-            return self.features[idx], self.labels[idx], self.video_ids[idx]
-        return self.features[idx], self.labels[idx], self.mc_labels[idx], self.video_ids[idx]
+        mc = self.mc_labels[idx] if self.mc_labels is not None else -1
+        src_mc = self.source_mc_labels[idx] if self.source_mc_labels is not None else -1
+        tf_id = self.target_frame_ids[idx] if idx < len(self.target_frame_ids) else None
+        return self.features[idx], self.labels[idx], mc, src_mc, self.video_ids[idx], tf_id
 
 class AttentionProbe(nn.Module):
     def __init__(self, input_dim, num_classes=2, num_heads=8):
@@ -66,7 +67,7 @@ class AttentionProbe(nn.Module):
         
         # Expand our single query token to match the batch size
         q = self.query.expand(B, -1, -1)
-
+        
         # Norm 1 Application
         x = self.norm1(x)
         
@@ -86,44 +87,49 @@ class AttentionProbe(nn.Module):
         return logits, attn_weights
 
 def train_linear_probe():
-    # 1. Initialize W&B run (Config is populated by the Sweep agent)
-    wandb.init()
-    config = wandb.config
-    
+    # 1. Temporarily comment out W&B initialization and use hardcoded best hyperparameters
+    # wandb.init()
+    # config = wandb.config
+
+    # Labeled best hyperparameters setting:
+    batch_size = 32
+    learning_rate = 0.00001935262894891232
+    weight_decay = 0.056775318543155096
+    beta1 = 0.95
+    beta2 = 0.99
+    early_stopping_patience = 5
+
     device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
     print(f"Using device: {device}")
     
     # 2. Load Cached Data from Block 18
-    train_dataset = CachedFeatureDataset("./cached_features/train_block18_unpooled_mc.pt")
-    val_dataset = CachedFeatureDataset("./cached_features/val_block18_unpooled_mc.pt")
+    train_dataset = CachedFeatureDataset("./cached_features/train_block18_900_unpooled_mc.pt")
+    val_dataset = CachedFeatureDataset("./cached_features/val_block18_900_unpooled_mc.pt")
 
     print(f'------- Train: {len(train_dataset)} | Val: {len(val_dataset)} ---------')
     
-    # Drop last to avoid batch size mismatch issues in edge cases
-    # train_loader = DataLoader(train_dataset, batch_size=config.batch_size, shuffle=True, drop_last=True)
-    train_loader = DataLoader(train_dataset, batch_size=config.batch_size, shuffle=True)
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
 
-    val_loader = DataLoader(val_dataset, batch_size=config.batch_size, shuffle=False)
-    
     # 3. Initialize Attention Probe
     hidden_dim = 768 
     model = AttentionProbe(input_dim=hidden_dim, num_heads=8).to(device)
-    
+
     criterion = nn.CrossEntropyLoss()
     # Use HPO configs for AdamW
     optimizer = optim.AdamW(
         model.parameters(), 
-        lr=config.learning_rate, 
-        weight_decay=config.weight_decay,
-        betas=(config.beta1, config.beta2)
+        lr=learning_rate, 
+        weight_decay=weight_decay,
+        betas=(beta1, beta2)
     )
-    
+
     # Early Stopping Setup
     best_val_loss = float('inf')
-    patience = config.early_stopping_patience
+    patience = early_stopping_patience
     patience_counter = 0
     epochs = 50 # Max epochs, but early stopping handles halting
-    
+
     # 4. Training Loop
     for epoch in range(epochs):
         model.train()
@@ -134,44 +140,56 @@ def train_linear_probe():
             features = batch_data[0].to(device)
             labels = batch_data[1].to(device)
             video_ids = batch_data[-1]
-            
+
             optimizer.zero_grad()
             outputs, _ = model(features)
             loss = criterion(outputs, labels)
             loss.backward()
             optimizer.step()
-            
+
             total_train_loss += loss.item()
             _, predicted = outputs.max(1)
             total += labels.size(0)
             correct += predicted.eq(labels).sum().item()
-            
+
         avg_train_loss = total_train_loss / len(train_loader)
         train_acc = 100. * correct / total
-        
+
         # 5. Validation Loop
         model.eval()
-        total_val_loss = 0
-        
+        total_val_loss = 0.0
         all_val_labels = []
         all_val_preds = []
         all_val_probs = []
-
+        
         current_epoch_attention_weights = {}
 
         with torch.no_grad():
             for batch_data in val_loader:
                 features = batch_data[0].to(device)
                 labels = batch_data[1].to(device)
-                if len(batch_data) == 4:
+                if len(batch_data) == 6:
                     mc_labels = batch_data[2]
+                    source_mc_labels = batch_data[3]
+                    video_ids = batch_data[4]
+                    target_frame_ids = batch_data[5]
+                elif len(batch_data) == 5:
+                    mc_labels = batch_data[2]
+                    source_mc_labels = None
                     video_ids = batch_data[3]
+                    target_frame_ids = batch_data[4]
+                elif len(batch_data) == 4:
+                    mc_labels = batch_data[2]
+                    source_mc_labels = None
+                    video_ids = batch_data[3]
+                    target_frame_ids = [None] * len(video_ids)
                 else:
                     mc_labels = None
+                    source_mc_labels = None
                     video_ids = batch_data[2]
+                    target_frame_ids = [None] * len(video_ids)
 
                 outputs, attn_wts = model(features)
-                # Calculate Validation Loss for Early Stopping
                 val_loss = criterion(outputs, labels)
                 total_val_loss += val_loss.item()
                 
@@ -182,29 +200,35 @@ def train_linear_probe():
                 all_val_preds.extend(predicted.cpu().numpy())
                 all_val_probs.extend(probs.cpu().numpy())
 
-                # Extract and save attention map per sequence ID along with class ID, label, and prediction confidence
                 for i, id in enumerate(video_ids):
-                    if mc_labels is not None:
-                        class_id = int(mc_labels[i].item())
-                    else:
-                        class_id = int(labels[i].item())
-                    
-                    class_label = DOTA_CLASS_NAMES.get(class_id, f"Class_{class_id}")
                     binary_label = int(labels[i].item())
+                    # Target class label for multiclass (0 for normal, 1..9 for anomaly)
+                    mc_id = int(mc_labels[i].item()) if isinstance(mc_labels, torch.Tensor) else -1
+                    # Source sequence category label (1..9 for both normal and anomaly clips from sequence)
+                    src_id = int(source_mc_labels[i].item()) if isinstance(source_mc_labels, torch.Tensor) and source_mc_labels[i].item() >= 0 else mc_id
+                    
+                    class_id = mc_id if mc_id >= 0 else binary_label
+                    class_label = DOTA_CLASS_NAMES.get(class_id, f"Class_{class_id}")
+                    source_class_label = DOTA_CLASS_NAMES.get(src_id, f"Class_{src_id}") if src_id >= 0 else class_label
+                    
                     pred_label = int(predicted[i].item())
                     prob_anom = float(probs[i].item())
                     prob_true = prob_anom if binary_label == 1 else (1.0 - prob_anom)
+                    target_frame_id = target_frame_ids[i] if i < len(target_frame_ids) else None
 
                     current_epoch_attention_weights[id] = {
                         "attn_weights": attn_wts[i].squeeze(1).cpu(),
+                        "target_frame_id": target_frame_id,
                         "class_id": class_id,
                         "class_label": class_label,
+                        "source_class_id": src_id,
+                        "source_class_label": source_class_label,
                         "binary_label": binary_label,
                         "pred_label": pred_label,
                         "prob_anom": prob_anom,
                         "prob_true": prob_true
                     }
-                
+        
         # 6. Calculate Metrics
         avg_val_loss = total_val_loss / len(val_loader)
         val_acc = accuracy_score(all_val_labels, all_val_preds) * 100
@@ -218,31 +242,27 @@ def train_linear_probe():
             
         cm = confusion_matrix(all_val_labels, all_val_preds)
         
-        # 7. Print and Log to W&B
+        # 7. Print Console Output (wandb logging temporarily commented out)
         print(f"\nEpoch {epoch+1}/{epochs} | Train Loss: {avg_train_loss:.4f} | Val Loss: {avg_val_loss:.4f}")
         print(f"--> Train Acc: {train_acc:.2f}% | Val Acc: {val_acc:.2f}% | AUC: {val_auc:.4f}")
         
-        wandb.log({
-            "epoch": epoch + 1,
-            "train_loss": avg_train_loss,
-            "train_accuracy": train_acc,
-            "val_loss": avg_val_loss,
-            "val_accuracy": val_acc,
-            "val_precision": val_precision,
-            "val_recall": val_recall,
-            "val_auc": val_auc
-        })
+        # wandb.log({
+        #     "epoch": epoch + 1,
+        #     "train_loss": avg_train_loss,
+        #     "train_accuracy": train_acc,
+        #     "val_loss": avg_val_loss,
+        #     "val_accuracy": val_acc,
+        #     "val_precision": val_precision,
+        #     "val_recall": val_recall,
+        #     "val_auc": val_auc
+        # })
 
         # 8. Early Stopping Logic
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
             patience_counter = 0
-            #Save the model state
+            # Save the model state
             torch.save(model.state_dict(), "best_attention_probe.pt")
-            
-            # Save the attention weights for the validation set of this best epoch
-            torch.save(current_epoch_attention_weights, "best_val_attention_weights.pt")
-            print(">>> Saved new best model and attention weights! <<<")
 
             # Identify Worst Mistakes (lowest prob_true)
             fps = [
@@ -253,14 +273,26 @@ def train_linear_probe():
                 (vid, info) for vid, info in current_epoch_attention_weights.items()
                 if info["binary_label"] == 1 and info["pred_label"] == 0
             ]
-            fps.sort(key=lambda x: x[1]["prob_true"]) # Lowest true prob (highest P(Anom) when Normal)
-            fns.sort(key=lambda x: x[1]["prob_true"]) # Lowest true prob (lowest P(Anom) when Anomalous)
+
+            fps.sort(key=lambda x: x[1]["prob_true"])
+            fns.sort(key=lambda x: x[1]["prob_true"])
+
+            fp_ids = [vid for vid, _ in fps]
+            fn_ids = [vid for vid, _ in fns]
+
+            # Save the attention weights and pre-sorted FP/FN IDs for the validation set of this best epoch
+            checkpoint_data = {
+                "sequences": current_epoch_attention_weights,
+                "fps": fp_ids,
+                "fns": fn_ids
+            }
+            torch.save(checkpoint_data, "best_val_attention_weights.pt")
+            print(">>> Saved new best model and attention weights with FP/FN IDs! <<<")
 
             print("\n--- WORST MISTAKES SUMMARY ---")
             print("Top False Positives (Normal predicted as Anomalous with high confidence):")
             for vid, info in fps[:5]:
                 print(f"  - Video: {vid} | P(Anomalous): {info['prob_anom']:.4f} | True Class: {info['class_label']} (ID: {info['class_id']})")
-
             print("Top False Negatives (Anomalous predicted as Normal with high confidence):")
             for vid, info in fns[:5]:
                 print(f"  - Video: {vid} | P(Anomalous): {info['prob_anom']:.4f} | True Class: {info['class_label']} (ID: {info['class_id']})")
@@ -270,16 +302,15 @@ def train_linear_probe():
             print(f"Early Stopping Counter: {patience_counter} / {patience}")
             if patience_counter >= patience:
                 print("Early stopping triggered. Halting training.")
-                break # Exit the epoch loop
+                break
+
 
 if __name__ == "__main__":
-    # Define the Hyperparameter Sweep Configuration
+
+    # Temporarily commented out wandb sweep logic:
     # sweep_config = {
-    #     'method': 'bayes', # Bayesian optimization 
-    #     'metric': {
-    #         'name': 'val_loss',
-    #         'goal': 'minimize'   
-    #     },
+    #     'method': 'bayes', 
+    #     'metric': {'name': 'val_loss', 'goal': 'minimize'},
     #     'parameters': {
     #         'learning_rate': {
     #             'distribution': 'log_uniform_values',
