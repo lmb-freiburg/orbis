@@ -89,24 +89,17 @@ class AttentionProbe(nn.Module):
         return logits, attn_weights
 
 def train_linear_probe():
-    wandb.init()
-    config = wandb.config
+    # 1. Temporarily comment out W&B initialization and use captured best hyperparameters
+    # wandb.init()
+    # config = wandb.config
 
-    # Dynamic W&B Sweep hyperparameter configuration
-    batch_size = getattr(config, 'batch_size', 32)
-    learning_rate = config.learning_rate
-    weight_decay = config.weight_decay
-    beta1 = config.beta1
-    beta2 = config.beta2
+    # Best hyperparameters setting from ancient-sweep-16 (Run 16):
+    batch_size = 64
+    learning_rate = 8.921907952045913e-05
+    weight_decay = 0.018889857643545577
+    beta1 = 0.95
+    beta2 = 0.99
     early_stopping_patience = 5
-
-    # Labeled best hyperparameters setting (commented out for sweep HPO):
-    # batch_size = 32
-    # learning_rate = 0.00001935262894891232
-    # weight_decay = 0.056775318543155096
-    # beta1 = 0.95
-    # beta2 = 0.99
-    # early_stopping_patience = 5
 
     device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
     print(f"Using device: {device}")
@@ -261,23 +254,23 @@ def train_linear_probe():
         print(f"\nEpoch {epoch+1}/{epochs} | Train Loss: {avg_train_loss:.4f} | Val Loss: {avg_val_loss:.4f}")
         print(f"--> Train Acc: {train_acc:.2f}% | Val Acc: {val_acc:.2f}% | AUC: {val_auc:.4f}")
         
-        wandb.log({
-            "epoch": epoch + 1,
-            "train_loss": avg_train_loss,
-            "train_accuracy": train_acc,
-            "val_loss": avg_val_loss,
-            "val_accuracy": val_acc,
-            "val_precision": val_precision,
-            "val_recall": val_recall,
-            "val_auc": val_auc
-        })
+        # wandb.log({
+        #     "epoch": epoch + 1,
+        #     "train_loss": avg_train_loss,
+        #     "train_accuracy": train_acc,
+        #     "val_loss": avg_val_loss,
+        #     "val_accuracy": val_acc,
+        #     "val_precision": val_precision,
+        #     "val_recall": val_recall,
+        #     "val_auc": val_auc
+        # })
 
-        # 8. Early Stopping Logic
+        # 8. Early Stopping & Saving Logic
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
             patience_counter = 0
-            # # Save the model state
-            # torch.save(model.state_dict(), "best_attention_probe.pt")
+            # Save the model state
+            torch.save(model.state_dict(), "best_attention_probe.pt")
 
             # # Identify Worst Mistakes (lowest prob_true)
             # fps = [
@@ -405,10 +398,12 @@ if __name__ == "__main__":
 
 
 
-    # Initialize the sweep with project name containing '-corrected-3600'
-    sweep_id = wandb.sweep(sweep_config, project="orbis-attention-probe-weights-corrected-3600")
-    # Run the sweep agent across 20 experiments
-    wandb.agent(sweep_id, function=train_linear_probe, count=20)
+    # Initialize the sweep (commented out for direct single run):
+    # sweep_id = wandb.sweep(sweep_config, project="orbis-attention-probe-weights-corrected-3600")
+    # wandb.agent(sweep_id, function=train_linear_probe, count=20)
+
+    # Run single training & checkpoint saving using ancient-sweep-16 hyperparameters
+    train_linear_probe()
 
     # # # Load your attention weights look-up map
     # attn_map = torch.load("best_val_attention_weights.pt")

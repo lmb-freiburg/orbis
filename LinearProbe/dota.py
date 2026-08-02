@@ -280,7 +280,7 @@ class DotaCloudDataset(Dataset):
     the lightweight metadata file ('DoTA_training.pt') inside the DOTA_training folder.
     Frames are loaded on-the-fly from disk in __getitem__.
     """
-    def __init__(self, export_dir="../DOTA_training", cache_file="DoTA_training.pt", transform=None):
+    def __init__(self, export_dir="DOTA_training", cache_file="DoTA_training.pt", transform=None):
         cache_path = os.path.join(export_dir, cache_file) if not os.path.isabs(cache_file) and not os.path.exists(cache_file) else cache_file
         if not os.path.exists(cache_path):
             raise FileNotFoundError(f"DotaCloudDataset cache file not found at '{cache_path}'. Please run get_dota_dataloaders(use_cloud_dataset=False) first to generate it.")
@@ -345,7 +345,7 @@ def get_dota_dataloaders(
     return_multiclass_labels=False, 
     num_frames_per_clip=6,
     use_cloud_dataset=False,
-    cloud_dir="../DOTA_training",
+    cloud_dir="DOTA_training",
     cloud_file="DoTA_training.pt"
 ):
     """
@@ -413,7 +413,7 @@ def get_dota_dataloaders(
         train_indices_set = set(train_dataset.indices)
         all_clip_paths, all_labels, all_mc_labels, all_src_mc_labels, all_ego_labels, all_video_ids, all_target_frame_ids = [], [], [], [], [], [], []
 
-        print("Exporting frame images to '../DOTA_training/data' and building metadata cache...")
+        print("Exporting frame images to 'DOTA_training/data' and building metadata cache...")
         for i in tqdm(range(len(full_dataset))):
             sample = full_dataset.samples[i]
             video_id = sample["video_name"]
