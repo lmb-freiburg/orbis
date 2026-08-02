@@ -19,6 +19,7 @@ conda-env/
 *.ckpt
 *.pt
 *.pth
+*.jpg
 *.bin
 *.safetensors
 *.onnx
@@ -40,6 +41,9 @@ results_pt/
 results/
 DoTA_pedestrian/
 DoTA_class/
+DoTA_class*/
+DoTA_prepared*/
+DoTA_training/
 
 # Temporary / generated files
 *.tmp

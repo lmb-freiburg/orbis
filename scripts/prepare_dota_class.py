@@ -12,7 +12,7 @@ FRAMES_ROOT = Path("/Volumes/maccbeast")
 OUTPUT_DIR = PROJECT_ROOT / "DoTA_class"
 
 NUM_FRAMES = 11
-FRAMES_INTO_ANOMALY = 3  # Target frame lands 3 frames after onset
+FRAMES_INTO_ANOMALY = 11  # Target frame lands 3 frames after onset
 CLIPS_PER_CLASS_MIN = 5
 CLIPS_PER_CLASS_MAX = 6
 
