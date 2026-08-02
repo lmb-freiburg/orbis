@@ -162,7 +162,21 @@ Skipped (Invalid Window):   108
 ============================================================
 
 
+results
 
+- latertal - 2/6 (car in front)
+- leave to left - 3/6
+- leave to right - 2/4
+
+
+identify semantic and detailed separation
+classifier - binary on surprise
+batch norm! 
+
+classifier
+
+- samples -> 900 (ood + non-ood)
+- 
 
 
 
