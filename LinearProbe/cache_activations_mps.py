@@ -231,7 +231,7 @@ def parse_args():
 if __name__ == "__main__":
     args = parse_args()
 
-    MAX_SAMPLES = None
+    MAX_SAMPLES = 900
     MULTI_CLASS = True
     
     if torch.backends.mps.is_available():
@@ -251,7 +251,10 @@ if __name__ == "__main__":
         num_workers=args.num_workers,
         max_samples = MAX_SAMPLES,
         return_multiclass_labels=MULTI_CLASS,
-        num_frames_per_clip=6
+        num_frames_per_clip=6,
+        use_cloud_dataset=True,
+        cloud_dir="../DOTA_training",
+        cloud_file="DoTA_training.pt"
     )
 
     model = load_model_from_config(args.exp_dir, args.config, args.ckpt, device)

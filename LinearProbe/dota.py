@@ -372,23 +372,34 @@ def get_dota_dataloaders(
         )
     
     total_size = len(full_dataset)
-    train_size = int(0.8 * total_size)
-    val_size = total_size - train_size
+    subset_size = min(total_size, max_samples) if max_samples is not None else total_size
+    train_size = int(0.8 * subset_size)
+    val_size = subset_size - train_size
+    unused_size = total_size - subset_size
     
     print("-" * 30)
-    print(f"Total valid clips generated: {total_size}")
+    print(f"Total valid clips available: {total_size}")
+    if subset_size < total_size:
+        print(f"Max samples cap applied:     {subset_size}")
     print(f"Training set size:           {train_size}")
     print(f"Validation set size:         {val_size}")
     print("-" * 30)
     
-    if total_size == 0:
+    if subset_size == 0:
         raise ValueError("No valid clips were found. Check your directory paths and JSON structure.")
         
-    train_dataset, val_dataset = random_split(
-        full_dataset, 
-        [train_size, val_size],
-        generator=torch.Generator().manual_seed(42)
-    )
+    if unused_size > 0:
+        train_dataset, val_dataset, _ = random_split(
+            full_dataset, 
+            [train_size, val_size, unused_size],
+            generator=torch.Generator().manual_seed(42)
+        )
+    else:
+        train_dataset, val_dataset = random_split(
+            full_dataset, 
+            [train_size, val_size],
+            generator=torch.Generator().manual_seed(42)
+        )
 
     if not use_cloud_dataset:
         export_root_dir = cloud_dir

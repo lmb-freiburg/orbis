@@ -89,24 +89,31 @@ class AttentionProbe(nn.Module):
         return logits, attn_weights
 
 def train_linear_probe():
-    # 1. Temporarily comment out W&B initialization and use hardcoded best hyperparameters
-    # wandb.init()
-    # config = wandb.config
+    wandb.init()
+    config = wandb.config
 
-    # Labeled best hyperparameters setting:
-    batch_size = 32
-    learning_rate = 0.00001935262894891232
-    weight_decay = 0.056775318543155096
-    beta1 = 0.95
-    beta2 = 0.99
+    # Dynamic W&B Sweep hyperparameter configuration
+    batch_size = getattr(config, 'batch_size', 32)
+    learning_rate = config.learning_rate
+    weight_decay = config.weight_decay
+    beta1 = config.beta1
+    beta2 = config.beta2
     early_stopping_patience = 5
+
+    # Labeled best hyperparameters setting (commented out for sweep HPO):
+    # batch_size = 32
+    # learning_rate = 0.00001935262894891232
+    # weight_decay = 0.056775318543155096
+    # beta1 = 0.95
+    # beta2 = 0.99
+    # early_stopping_patience = 5
 
     device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
     print(f"Using device: {device}")
     
     # 2. Load Cached Data from Block 18
-    train_dataset = CachedFeatureDataset("./cached_features/train_block18_all_correct_unpooled_mc.pt")
-    val_dataset = CachedFeatureDataset("./cached_features/val_block18_all_correct_unpooled_mc.pt")
+    train_dataset = CachedFeatureDataset("./cached_features/train_block18_3600_correct_unpooled_mc.pt")
+    val_dataset = CachedFeatureDataset("./cached_features/val_block18_3600_correct_unpooled_mc.pt")
 
     print(f'------- Train: {len(train_dataset)} | Val: {len(val_dataset)} ---------')
     
@@ -254,57 +261,57 @@ def train_linear_probe():
         print(f"\nEpoch {epoch+1}/{epochs} | Train Loss: {avg_train_loss:.4f} | Val Loss: {avg_val_loss:.4f}")
         print(f"--> Train Acc: {train_acc:.2f}% | Val Acc: {val_acc:.2f}% | AUC: {val_auc:.4f}")
         
-        # wandb.log({
-        #     "epoch": epoch + 1,
-        #     "train_loss": avg_train_loss,
-        #     "train_accuracy": train_acc,
-        #     "val_loss": avg_val_loss,
-        #     "val_accuracy": val_acc,
-        #     "val_precision": val_precision,
-        #     "val_recall": val_recall,
-        #     "val_auc": val_auc
-        # })
+        wandb.log({
+            "epoch": epoch + 1,
+            "train_loss": avg_train_loss,
+            "train_accuracy": train_acc,
+            "val_loss": avg_val_loss,
+            "val_accuracy": val_acc,
+            "val_precision": val_precision,
+            "val_recall": val_recall,
+            "val_auc": val_auc
+        })
 
         # 8. Early Stopping Logic
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
             patience_counter = 0
-            # Save the model state
-            torch.save(model.state_dict(), "best_attention_probe.pt")
+            # # Save the model state
+            # torch.save(model.state_dict(), "best_attention_probe.pt")
 
-            # Identify Worst Mistakes (lowest prob_true)
-            fps = [
-                (vid, info) for vid, info in current_epoch_attention_weights.items()
-                if info["binary_label"] == 0 and info["pred_label"] == 1
-            ]
-            fns = [
-                (vid, info) for vid, info in current_epoch_attention_weights.items()
-                if info["binary_label"] == 1 and info["pred_label"] == 0
-            ]
+            # # Identify Worst Mistakes (lowest prob_true)
+            # fps = [
+            #     (vid, info) for vid, info in current_epoch_attention_weights.items()
+            #     if info["binary_label"] == 0 and info["pred_label"] == 1
+            # ]
+            # fns = [
+            #     (vid, info) for vid, info in current_epoch_attention_weights.items()
+            #     if info["binary_label"] == 1 and info["pred_label"] == 0
+            # ]
 
-            fps.sort(key=lambda x: x[1]["prob_true"])
-            fns.sort(key=lambda x: x[1]["prob_true"])
+            # fps.sort(key=lambda x: x[1]["prob_true"])
+            # fns.sort(key=lambda x: x[1]["prob_true"])
 
-            fp_ids = [vid for vid, _ in fps]
-            fn_ids = [vid for vid, _ in fns]
+            # fp_ids = [vid for vid, _ in fps]
+            # fn_ids = [vid for vid, _ in fns]
 
-            # Save the attention weights and pre-sorted FP/FN IDs for the validation set of this best epoch
-            checkpoint_data = {
-                "sequences": current_epoch_attention_weights,
-                "fps": fp_ids,
-                "fns": fn_ids
-            }
-            torch.save(checkpoint_data, "best_val_attention_weights.pt")
-            print(">>> Saved new best model and attention weights with FP/FN IDs! <<<")
+            # # Save the attention weights and pre-sorted FP/FN IDs for the validation set of this best epoch
+            # checkpoint_data = {
+            #     "sequences": current_epoch_attention_weights,
+            #     "fps": fp_ids,
+            #     "fns": fn_ids
+            # }
+            # torch.save(checkpoint_data, "best_val_attention_weights.pt")
+            # print(">>> Saved new best model and attention weights with FP/FN IDs! <<<")
 
-            print("\n--- WORST MISTAKES SUMMARY ---")
-            print("Top False Positives (Normal predicted as Anomalous with high confidence):")
-            for vid, info in fps[:5]:
-                print(f"  - Video: {vid} | P(Anomalous): {info['prob_anom']:.4f} | True Class: {info['class_label']} (ID: {info['class_id']})")
-            print("Top False Negatives (Anomalous predicted as Normal with high confidence):")
-            for vid, info in fns[:5]:
-                print(f"  - Video: {vid} | P(Anomalous): {info['prob_anom']:.4f} | True Class: {info['class_label']} (ID: {info['class_id']})")
-            print("-------------------------------\n")
+            # print("\n--- WORST MISTAKES SUMMARY ---")
+            # print("Top False Positives (Normal predicted as Anomalous with high confidence):")
+            # for vid, info in fps[:5]:
+            #     print(f"  - Video: {vid} | P(Anomalous): {info['prob_anom']:.4f} | True Class: {info['class_label']} (ID: {info['class_id']})")
+            # print("Top False Negatives (Anomalous predicted as Normal with high confidence):")
+            # for vid, info in fns[:5]:
+            #     print(f"  - Video: {vid} | P(Anomalous): {info['prob_anom']:.4f} | True Class: {info['class_label']} (ID: {info['class_id']})")
+            # print("-------------------------------\n")
         else:
             patience_counter += 1
             print(f"Early Stopping Counter: {patience_counter} / {patience}")
@@ -315,63 +322,63 @@ def train_linear_probe():
 
 if __name__ == "__main__":
 
-    # Temporarily commented out wandb sweep logic:
-    # sweep_config = {
-    #     'method': 'bayes', 
-    #     'metric': {'name': 'val_loss', 'goal': 'minimize'},
-    #     'parameters': {
-    #         'learning_rate': {
-    #             'distribution': 'log_uniform_values',
-    #             'min': 1e-6,
-    #             'max': 1e-3
-    #         },
-    #         'weight_decay': {
-    #             'distribution': 'uniform',
-    #             'min': 0.0,
-    #             'max': 0.1
-    #         },
-    #         'batch_size': {
-    #             'values': [16, 32, 64]
-    #         },
-    #         'beta1': {
-    #             'values': [0.9, 0.95]
-    #         },
-    #         'beta2': {
-    #             'values': [0.99, 0.999]
-    #         },
-    #         'early_stopping_patience': {
-    #             'value': 5
-    #         }
-    #     }
-    # }
-
     sweep_config = {
-    'method': 'grid',  # Changed to grid to run this specific configuration once
-    'metric': {
-        'name': 'val_loss',
-        'goal': 'minimize'   
-    },
-    'parameters': {
-        'learning_rate': {
-            'value': 0.00001935262894891232  # Exact best learning rate
-        },
-        'weight_decay': {
-            'value': 0.056775318543155096    # Exact best weight decay
-        },
-        'batch_size': {
-            'value': 32
-        },
-        'beta1': {
-            'value': 0.95
-        },
-        'beta2': {
-            'value': 0.99
-        },
-        'early_stopping_patience': {
-            'value': 5
+        'method': 'bayes', 
+        'metric': {'name': 'val_loss', 'goal': 'minimize'},
+        'parameters': {
+            'learning_rate': {
+                'distribution': 'log_uniform_values',
+                'min': 1e-6,
+                'max': 1e-3
+            },
+            'weight_decay': {
+                'distribution': 'uniform',
+                'min': 0.0,
+                'max': 0.1
+            },
+            'batch_size': {
+                'values': [16, 32, 64]
+            },
+            'beta1': {
+                'values': [0.9, 0.95]
+            },
+            'beta2': {
+                'values': [0.99, 0.999]
+            },
+            'early_stopping_patience': {
+                'value': 5
+            }
         }
     }
-    }
+
+    # Comment out best hyperparam setting
+    # sweep_config = {
+    # 'method': 'grid',  # Changed to grid to run this specific configuration once
+    # 'metric': {
+    #     'name': 'val_loss',
+    #     'goal': 'minimize'   
+    # },
+    # 'parameters': {
+    #     'learning_rate': {
+    #         'value': 0.00001935262894891232  # Exact best learning rate
+    #     },
+    #     'weight_decay': {
+    #         'value': 0.056775318543155096    # Exact best weight decay
+    #     },
+    #     'batch_size': {
+    #         'value': 32
+    #     },
+    #     'beta1': {
+    #         'value': 0.95
+    #     },
+    #     'beta2': {
+    #         'value': 0.99
+    #     },
+    #     'early_stopping_patience': {
+    #         'value': 5
+    #     }
+    # }
+    # }
     # # Best Hyper Param-Setting - dauntless-sweep-15
     #     batch_size:32
     #     beta1:0.95
@@ -398,15 +405,10 @@ if __name__ == "__main__":
 
 
 
-    # Initialize the sweep
-    # sweep_id = wandb.sweep(sweep_config, project="orbis-attention-probe")
-    # Run the sweep agent (this will run train_linear_probe 20 times with different parameters)
-    # wandb.agent(sweep_id, function=train_linear_probe, count=20)
-
-
-    
-    sweep_id = wandb.sweep(sweep_config, project="orbis-attention-probe-weights")
-    wandb.agent(sweep_id, function=train_linear_probe, count=1)
+    # Initialize the sweep with project name containing '-corrected-3600'
+    sweep_id = wandb.sweep(sweep_config, project="orbis-attention-probe-weights-corrected-3600")
+    # Run the sweep agent across 20 experiments
+    wandb.agent(sweep_id, function=train_linear_probe, count=20)
 
     # # # Load your attention weights look-up map
     # attn_map = torch.load("best_val_attention_weights.pt")
