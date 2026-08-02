@@ -28,11 +28,12 @@ except ImportError:
 
 class CachedFeatureDataset(Dataset):
     def __init__(self, cache_path):
-        data = torch.load(cache_path)
-        self.features = data['features']
+        data = torch.load(cache_path, map_location='cpu')
+        self.features = data['features'].half() if data['features'].dtype == torch.float32 else data['features']
         self.labels = data['labels'].long() 
         self.mc_labels = data['mc_labels'] if 'mc_labels' in data else None
         self.source_mc_labels = data['source_mc_labels'] if 'source_mc_labels' in data else None
+        self.ego_labels = data['ego_labels'] if 'ego_labels' in data else None
         self.video_ids = data['video_ids']
         self.target_frame_ids = data['target_frame_ids'] if 'target_frame_ids' in data else [None] * len(self.video_ids)
         print(f'Loaded {cache_path} | Shape - {self.features.shape} , {self.labels.shape}')
@@ -43,8 +44,9 @@ class CachedFeatureDataset(Dataset):
     def __getitem__(self, idx):
         mc = self.mc_labels[idx] if self.mc_labels is not None else -1
         src_mc = self.source_mc_labels[idx] if self.source_mc_labels is not None else -1
+        ego = self.ego_labels[idx] if self.ego_labels is not None else -1
         tf_id = self.target_frame_ids[idx] if idx < len(self.target_frame_ids) else None
-        return self.features[idx], self.labels[idx], mc, src_mc, self.video_ids[idx], tf_id
+        return self.features[idx].float(), self.labels[idx], mc, src_mc, ego, self.video_ids[idx], tf_id
 
 class AttentionProbe(nn.Module):
     def __init__(self, input_dim, num_classes=2, num_heads=8):
@@ -103,8 +105,8 @@ def train_linear_probe():
     print(f"Using device: {device}")
     
     # 2. Load Cached Data from Block 18
-    train_dataset = CachedFeatureDataset("./cached_features/train_block18_900_unpooled_mc.pt")
-    val_dataset = CachedFeatureDataset("./cached_features/val_block18_900_unpooled_mc.pt")
+    train_dataset = CachedFeatureDataset("./cached_features/train_block18_all_correct_unpooled_mc.pt")
+    val_dataset = CachedFeatureDataset("./cached_features/val_block18_all_correct_unpooled_mc.pt")
 
     print(f'------- Train: {len(train_dataset)} | Val: {len(val_dataset)} ---------')
     
@@ -168,24 +170,28 @@ def train_linear_probe():
             for batch_data in val_loader:
                 features = batch_data[0].to(device)
                 labels = batch_data[1].to(device)
-                if len(batch_data) == 6:
+                if len(batch_data) == 7:
                     mc_labels = batch_data[2]
                     source_mc_labels = batch_data[3]
+                    ego_labels = batch_data[4]
+                    video_ids = batch_data[5]
+                    target_frame_ids = batch_data[6]
+                elif len(batch_data) == 6:
+                    mc_labels = batch_data[2]
+                    source_mc_labels = batch_data[3]
+                    ego_labels = None
                     video_ids = batch_data[4]
                     target_frame_ids = batch_data[5]
                 elif len(batch_data) == 5:
                     mc_labels = batch_data[2]
                     source_mc_labels = None
+                    ego_labels = None
                     video_ids = batch_data[3]
                     target_frame_ids = batch_data[4]
-                elif len(batch_data) == 4:
-                    mc_labels = batch_data[2]
-                    source_mc_labels = None
-                    video_ids = batch_data[3]
-                    target_frame_ids = [None] * len(video_ids)
                 else:
                     mc_labels = None
                     source_mc_labels = None
+                    ego_labels = None
                     video_ids = batch_data[2]
                     target_frame_ids = [None] * len(video_ids)
 
@@ -215,8 +221,10 @@ def train_linear_probe():
                     prob_anom = float(probs[i].item())
                     prob_true = prob_anom if binary_label == 1 else (1.0 - prob_anom)
                     target_frame_id = target_frame_ids[i] if i < len(target_frame_ids) else None
+                    unique_key = f"{id}_{target_frame_id}" if target_frame_id else f"{id}_lbl{binary_label}"
 
-                    current_epoch_attention_weights[id] = {
+                    current_epoch_attention_weights[unique_key] = {
+                        "video_id": id,
                         "attn_weights": attn_wts[i].squeeze(1).cpu(),
                         "target_frame_id": target_frame_id,
                         "class_id": class_id,

@@ -226,9 +226,10 @@ def sample_and_generate_relative_heatmaps(
     
     # 3. Setup Image Transforms
     transform = transforms.Compose([
-        transforms.Resize((288, 512)),
+        transforms.Resize(288),
+        transforms.CenterCrop((288, 512)),
         transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+        transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])  # Maps to [-1, 1], matching multiframe_val
     ])
     
     # 4. Filter and Sample Valid Sequences from DoTA
@@ -306,7 +307,8 @@ def sample_and_generate_relative_heatmaps(
             # Load and Transform Frames
             frames = []
             for p in clip_paths:
-                img = Image.open(p).convert('RGB')
+                img = cv2.imread(p)
+                img = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
                 frames.append(transform(img))
                 
             # Shape: [Batch=1, Channels=3, Time=6, Height=288, Width=512]
@@ -546,6 +548,155 @@ def generate_heatmaps_from_saved_weights(
     print(f"\nCompleted generating heatmaps in: {output_dir}")
 
 
+def generate_attention_heatmaps_binary(
+    weights_path="best_val_attention_weights.pt",
+    sequence_dir="../DoTA_sequences",
+    output_dir="./attention_heatmaps_binary"
+):
+    """
+    Generates mean and per-head attention heatmaps overlaid onto target frames.
+    Organizes heatmaps into:
+        output_dir / <source_class_label> / <TP|TN|FP|FN> / <video_id>_frame_<frame_stem>_heatmap.jpg
+    """
+    if not os.path.exists(weights_path):
+        print(f"Weights file not found: {weights_path}")
+        return
+
+    ckpt = torch.load(weights_path)
+    if isinstance(ckpt, dict) and "sequences" in ckpt:
+        sequences = ckpt["sequences"]
+    else:
+        sequences = ckpt
+
+    print(f"\n==================================================")
+    print(f"Generating binary attention heatmaps in: '{output_dir}'")
+    print(f"Total validation sequences: {len(sequences)}")
+    print(f"==================================================")
+
+    category_counts = {"TP": 0, "TN": 0, "FP": 0, "FN": 0}
+
+    for key_id, data in sequences.items():
+        if not isinstance(data, dict):
+            continue
+
+        video_id = data.get('video_id', key_id)
+        binary_label = data.get('binary_label', 0)
+        pred_label = data.get('pred_label', 0)
+
+        if binary_label == 1 and pred_label == 1:
+            category = "TP"
+        elif binary_label == 0 and pred_label == 0:
+            category = "TN"
+        elif binary_label == 0 and pred_label == 1:
+            category = "FP"
+        elif binary_label == 1 and pred_label == 0:
+            category = "FN"
+        else:
+            category = "UNKNOWN"
+
+        category_counts[category] = category_counts.get(category, 0) + 1
+
+        # Source class label for folder naming
+        src_id = data.get('source_class_id', -1)
+        src_label = data.get('source_class_label')
+        if not src_label or src_label == 'Unknown':
+            class_id = data.get('class_id', 0)
+            src_label = DOTA_CLASS_NAMES.get(src_id if src_id >= 0 else class_id, f"Class_{src_id}")
+
+        # Sanitize folder name
+        source_folder = str(src_label).lower().replace(' ', '_')
+        target_dir = os.path.join(output_dir, source_folder, category)
+        os.makedirs(target_dir, exist_ok=True)
+
+        attn_weights = data.get('attn_weights')  # Shape: [8, 576] or [576]
+        if attn_weights is None:
+            continue
+
+        target_frame_id = data.get('target_frame_id')
+        class_id = data.get('class_id')
+        class_label = data.get('class_label', 'Unknown')
+        prob_anom = data.get('prob_anom')
+
+        # Resolve image file
+        video_name = video_id.rsplit('_', 2)[0] if '_' in video_id and not os.path.exists(os.path.join(sequence_dir, video_id, 'images')) else video_id
+        video_folder = os.path.join(sequence_dir, video_id, 'images')
+        if not os.path.exists(video_folder):
+            video_folder = os.path.join(sequence_dir, video_name, 'images')
+
+        if not os.path.exists(video_folder):
+            print(f"Warning: Image folder for {video_id} not found at {video_folder}")
+            continue
+
+        if target_frame_id and os.path.exists(os.path.join(video_folder, target_frame_id)):
+            target_img_path = os.path.join(video_folder, target_frame_id)
+        else:
+            frame_files = sorted([f for f in os.listdir(video_folder) if f.endswith(('.jpg', '.png'))])
+            if not frame_files:
+                continue
+            target_img_path = os.path.join(video_folder, frame_files[-1])
+
+        target_frame_name = os.path.basename(target_img_path)
+        img = cv2.imread(target_img_path)
+        if img is None:
+            continue
+
+        H, W, _ = img.shape
+        img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+
+        # Render 2x5 Grid: Raw RGB, Mean Attention, and 8 individual heads
+        fig = plt.figure(figsize=(25, 10))
+        gs = gridspec.GridSpec(2, 5, figure=fig)
+
+        # Row 0, Col 0: Raw RGB Image
+        ax = fig.add_subplot(gs[0, 0])
+        ax.imshow(img_rgb)
+        ax.set_title(f"Raw Image ({target_frame_name})", fontsize=16, pad=12, fontweight='bold')
+        ax.axis('off')
+
+        num_heads = attn_weights.shape[0] if attn_weights.dim() > 1 else 8
+        for h in range(min(4, num_heads)):
+            head_attn = attn_weights[h] if attn_weights.dim() > 1 else attn_weights
+            _, overlay = process_attention_map(head_attn, img, W, H)
+            ax = fig.add_subplot(gs[0, h + 1])
+            ax.imshow(overlay)
+            ax.set_title(f"Head {h + 1}", fontsize=16, pad=12)
+            ax.axis('off')
+
+        mean_attn = attn_weights.mean(dim=0) if attn_weights.dim() > 1 else attn_weights
+        _, mean_overlay = process_attention_map(mean_attn, img, W, H)
+        ax = fig.add_subplot(gs[1, 0])
+        ax.imshow(mean_overlay)
+        ax.set_title(f"Mean Attention ({target_frame_name})", fontsize=16, pad=12, fontweight='bold')
+        ax.axis('off')
+
+        for h in range(4, min(8, num_heads)):
+            head_attn = attn_weights[h]
+            _, overlay = process_attention_map(head_attn, img, W, H)
+            ax = fig.add_subplot(gs[1, h - 3])
+            ax.imshow(overlay)
+            ax.set_title(f"Head {h + 1}", fontsize=16, pad=12)
+            ax.axis('off')
+
+        frame_str = f" | Target Frame: {target_frame_name}"
+        src_str = f" [Source Seq: {src_label}]" if src_label and src_label != class_label else ""
+        prob_str = f" | P(Anomalous)={prob_anom:.4f}" if prob_anom is not None else ""
+        header_str = f"[{category}] Video: {video_id}{frame_str} | Class: {class_label} (ID: {class_id}){src_str}{prob_str}"
+
+        fig.suptitle(header_str, fontsize=18, y=1.02, fontweight='bold')
+        plt.tight_layout()
+
+        frame_stem = os.path.splitext(target_frame_name)[0]
+        save_filename = f"{category}_{video_id}_frame_{frame_stem}_heatmap.jpg"
+        save_path = os.path.join(target_dir, save_filename)
+        plt.savefig(save_path, bbox_inches='tight', dpi=150)
+        plt.close(fig)
+
+    print(f"\nHeatmaps summary by category:")
+    for cat, count in category_counts.items():
+        print(f"  - {cat}: {count} heatmaps saved")
+    print(f"Completed generating binary attention heatmaps in: '{output_dir}'")
+
+
 # ==========================================
 # Execution Entry Point:
 # ==========================================
@@ -553,27 +704,8 @@ if __name__ == "__main__":
     
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
 
-    # generate_heatmaps_from_saved_weights reads target_frame_id directly from best_val_attention_weights.pt
-    # without reading any annotation JSON files.
-    generate_heatmaps_from_saved_weights(
+    generate_attention_heatmaps_binary(
         weights_path="best_val_attention_weights.pt",
         sequence_dir="../DoTA_sequences",
-        output_dir="./attention_heatmaps_saved",
-        num_worst_fp=5,
-        num_worst_fn=5,
-        only_worst_mistakes=True
+        output_dir="./attention_heatmaps_binary"
     )
-
-    # Legacy relative heatmaps function call (requires Orbis model checkpoint & annotations):
-    # sample_and_generate_relative_heatmaps(
-    #     sequence_dir="../DoTA_sequences",
-    #     annotation_dir="../DOTA_annotations",
-    #     orbis_exp_dir="./logs_wm/orbis_288x512",
-    #     orbis_config_path="config.yaml",
-    #     orbis_ckpt_path="checkpoints/last.ckpt",
-    #     probe_weights_path="best_attention_probe.pt",
-    #     base_output_dir="./attention_heatmaps",
-    #     device=DEVICE,
-    #     num_samples=10,
-    #     num_frames_per_clip=6
-    # )
