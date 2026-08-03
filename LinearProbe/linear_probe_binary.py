@@ -161,11 +161,13 @@ def train_linear_probe():
             "val_auc": val_auc
         })
 
-        # 8. Early Stopping Logic
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
             patience_counter = 0
-            # Optional: torch.save(model.state_dict(), "best_model.pt")
+            checkpoint_dir = "./checkpoints/binary"
+            os.makedirs(checkpoint_dir, exist_ok=True)
+            torch.save(model.state_dict(), os.path.join(checkpoint_dir, "best_binary_linear_probe.pt"))
+            print(f">>> Saved new best binary linear model to '{checkpoint_dir}'! <<<")
         else:
             patience_counter += 1
             print(f"Early Stopping Counter: {patience_counter} / {patience}")

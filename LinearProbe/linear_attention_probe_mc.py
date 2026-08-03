@@ -1,3 +1,4 @@
+import os
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -93,17 +94,15 @@ class AttentionProbe(nn.Module):
 
 
 def train_linear_probe():
-    # 1. Temporarily comment out W&B initialization and use captured best hyperparameters
-    # wandb.init()
-    # config = wandb.config
-
-    # Best hyperparameters setting (from HPO sweep):
+    # Local mode hyperparameters (skipping wandb)
     batch_size = 64
     learning_rate = 8.921907952045913e-05
     weight_decay = 0.018889857643545577
     beta1 = 0.95
     beta2 = 0.99
     early_stopping_patience = 5
+
+
 
     device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
     print(f"Using device: {device}")
@@ -121,13 +120,18 @@ def train_linear_probe():
     hidden_dim = 768 
     model = AttentionProbe(input_dim=hidden_dim, num_classes=NUM_CLASS, num_heads=8).to(device)
 
-    # Compute inverse class frequency weights for weighted CrossEntropyLoss
+    # Compute class weights: Class 0 (normal) receives 0.5 of total loss weight mass,
+    # while the remaining 0.5 is distributed inversely proportional to anomaly class counts.
     if train_dataset.mc_labels is not None:
         class_counts = torch.bincount(train_dataset.mc_labels.long(), minlength=NUM_CLASS).float()
         class_counts = torch.where(class_counts == 0, torch.tensor(1.0), class_counts)
-        class_weights = 1.0 / class_counts
-        class_weights = (class_weights / class_weights.sum()) * NUM_CLASS
-        class_weights = class_weights.to(device)
+        
+        class_weights = torch.zeros(NUM_CLASS, device=device)
+        class_weights[0] = 0.5
+        
+        anomaly_inv_counts = 1.0 / class_counts[1:]
+        anomaly_weights = anomaly_inv_counts / anomaly_inv_counts.sum()
+        class_weights[1:] = 0.5 * anomaly_weights
         print("\n--- Class Weights for Weighted CrossEntropyLoss ---")
         for cls_id in range(NUM_CLASS):
             c_name = DOTA_CLASS_NAMES.get(cls_id, f"Class_{cls_id}")
@@ -138,8 +142,7 @@ def train_linear_probe():
     else:
         class_weights = None
 
-    # criterion = nn.CrossEntropyLoss(weight=class_weights)
-    criterion = nn.CrossEntropyLoss()
+    criterion = nn.CrossEntropyLoss(weight=class_weights)
     optimizer = optim.AdamW(
         model.parameters(), 
         lr=learning_rate, 
@@ -184,6 +187,8 @@ def train_linear_probe():
         all_val_mc_labels = []
         all_val_preds = []
         all_val_probs = []
+        all_binary_labels = []
+        all_binary_probs = []
         
         current_epoch_attention_weights = {}
 
@@ -226,6 +231,8 @@ def train_linear_probe():
                 all_val_mc_labels.extend(mc_labels.cpu().numpy())
                 all_val_preds.extend(predicted.cpu().numpy())
                 all_val_probs.extend(probs.cpu().numpy())
+                all_binary_labels.extend(binary_labels.cpu().numpy())
+                all_binary_probs.extend((probs[:, 1:].sum(dim=1)).cpu().numpy())
 
                 for i, id in enumerate(video_ids):
                     bin_lbl = int(binary_labels[i].item())
@@ -260,48 +267,49 @@ def train_linear_probe():
         val_recall = recall_score(all_val_mc_labels, all_val_preds, zero_division=0, average='weighted') * 100
         
         try:
-            val_auc = roc_auc_score(all_val_mc_labels, all_val_probs, multi_class='ovr')
+            val_auc = roc_auc_score(all_val_mc_labels, all_val_probs, multi_class='ovr', average='weighted')
+            binary_auc = roc_auc_score(all_binary_labels, all_binary_probs)
         except ValueError:
             val_auc = float('nan')
+            binary_auc = float('nan')
             
         cm = confusion_matrix(all_val_mc_labels, all_val_preds)
         
         # 7. Print Console Output
         print(f"\nEpoch {epoch+1}/{epochs} | Train Loss: {avg_train_loss:.4f} | Val Loss: {avg_val_loss:.4f}")
-        print(f"--> Train Acc: {train_acc:.2f}% | Val Acc: {val_acc:.2f}% | Weighted AUC: {val_auc:.4f}")
+        print(f"--> Train Acc: {train_acc:.2f}% | Val Acc: {val_acc:.2f}% | Weighted MC AUC: {val_auc:.4f} | Binary AUC: {binary_auc:.4f}")
         
-        # wandb.log({
-        #     "epoch": epoch + 1,
-        #     "train_loss": avg_train_loss,
-        #     "train_accuracy": train_acc,
-        #     "val_loss": avg_val_loss,
-        #     "val_accuracy": val_acc,
-        #     "val_precision": val_precision,
-        #     "val_recall": val_recall,
-        #     "val_auc": val_auc
-        # })
+        if wandb.run is not None:
+            wandb.log({
+                "epoch": epoch + 1,
+                "train_loss": avg_train_loss,
+                "train_accuracy": train_acc,
+                "val_loss": avg_val_loss,
+                "val_accuracy": val_acc,
+                "val_precision": val_precision,
+                "val_recall": val_recall,
+                "val_f1": (val_precision + val_recall) / 2,
+                "val_auc_weighted": val_auc,
+                "val_auc_binary": binary_auc,
+                "class_weights": class_weights.tolist() if isinstance(class_weights, torch.Tensor) else None,
+            })
+
 
         # 8. Early Stopping & Saving Logic
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
             patience_counter = 0
             # Save the model state
-            torch.save(model.state_dict(), "best_attention_probe_mc.pt")
-
-            # # Identify Worst Mistakes (lowest prob_true)
-            # mistakes = [
-            #     (vid, info) for vid, info in current_epoch_attention_weights.items()
-            #     if info["class_id"] != info["pred_label"]
-            # ]
-            # mistakes.sort(key=lambda x: x[1]["prob_true"])
-            # mistake_ids = [vid for vid, _ in mistakes]
+            checkpoint_dir = "./checkpoints/multiclass"
+            os.makedirs(checkpoint_dir, exist_ok=True)
+            torch.save(model.state_dict(), os.path.join(checkpoint_dir, "best_multiclass_attention_probe.pt"))
 
             # Save attention weights for best epoch
             checkpoint_data = {
                 "sequences": current_epoch_attention_weights,
             }
-            torch.save(checkpoint_data, "best_val_attention_weights_mc.pt")
-            print(">>> Saved new best multiclass model and attention weights! <<<")
+            torch.save(checkpoint_data, os.path.join(checkpoint_dir, "best_multiclass_val_attention_weights.pt"))
+            print(f">>> Saved new best multiclass model and attention weights to '{checkpoint_dir}'! <<<")
 
             # print("\n--- WORST MISTAKES SUMMARY ---")
             # for vid, info in mistakes[:5]:
@@ -335,10 +343,10 @@ if __name__ == "__main__":
                 'values': [16, 32, 64]
             },
             'beta1': {
-                'values': [0.9, 0.95]
+                'value': 0.95
             },
             'beta2': {
-                'values': [0.99, 0.999]
+                'value': 0.99
             },
             'early_stopping_patience': {
                 'value': 5
@@ -350,5 +358,5 @@ if __name__ == "__main__":
     # sweep_id = wandb.sweep(sweep_config, project="orbis-attention-probe-mc-corrected-3600")
     # wandb.agent(sweep_id, function=train_linear_probe, count=20)
 
-    # Run single training & checkpoint saving using best hyperparameters
+    # Run single training & checkpoint saving using local best hyperparameters
     train_linear_probe()

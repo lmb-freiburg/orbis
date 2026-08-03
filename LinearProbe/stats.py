@@ -78,16 +78,27 @@ def load_probe_model(model_path, weights_path, input_dim, num_classes, device):
     """
     model = AttentionProbe(input_dim=input_dim, num_classes=num_classes, num_heads=8).to(device)
 
+    # Candidate paths resolution
+    candidate_model_paths = [
+        model_path,
+        os.path.join("./checkpoints/multiclass", os.path.basename(model_path)),
+        os.path.join("./checkpoints/binary", os.path.basename(model_path)),
+        os.path.join("./checkpoints/surprise", os.path.basename(model_path)),
+        os.path.join("./checkpoints/encoder", os.path.basename(model_path)),
+    ]
+
     loaded = False
-    if os.path.exists(model_path):
-        try:
-            state_dict = torch.load(model_path, map_location=device)
-            if isinstance(state_dict, dict) and "query" in state_dict:
-                model.load_state_dict(state_dict)
-                print(f"Successfully loaded trained AttentionProbe weights from '{model_path}'")
-                loaded = True
-        except Exception as e:
-            print(f"Warning: Could not load weights from '{model_path}': {e}")
+    for path in candidate_model_paths:
+        if os.path.exists(path):
+            try:
+                state_dict = torch.load(path, map_location=device)
+                if isinstance(state_dict, dict) and "query" in state_dict:
+                    model.load_state_dict(state_dict)
+                    print(f"Successfully loaded trained AttentionProbe weights from '{path}'")
+                    loaded = True
+                    break
+            except Exception as e:
+                print(f"Warning: Could not load weights from '{path}': {e}")
 
     if not loaded and os.path.exists(weights_path):
         try:
@@ -300,7 +311,7 @@ def generate_stats(
         overall_rec = recall_score(all_labels, all_preds, zero_division=0, average='weighted') * 100
         overall_f1 = f1_score(all_labels, all_preds, zero_division=0, average='weighted') * 100
         try:
-            overall_auc = roc_auc_score(all_labels, all_probs, multi_class='ovr')
+            overall_auc = roc_auc_score(all_labels, all_probs, multi_class='ovr', average='weighted')
             overall_auc_str = f"{overall_auc:.4f}"
         except Exception:
             overall_auc_str = "N/A"
@@ -450,15 +461,15 @@ if __name__ == "__main__":
     # Set defaults based on is_mc flag
     if args.is_mc:
         cache_path = args.cache_path or "./cached_features/val_block18_3600_correct_unpooled_mc.pt"
-        model_path = args.model_path or "best_attention_probe_mc.pt"
-        weights_path = args.weights_path or "best_val_attention_weights_mc.pt"
+        model_path = args.model_path or "./checkpoints/multiclass/best_multiclass_attention_probe.pt"
+        weights_path = args.weights_path or "./checkpoints/multiclass/best_multiclass_val_attention_weights.pt"
         output_path = args.output_path or "stats_report_mc.md"
         plot_dir = args.plot_dir or "./confusion_matrices_mc"
         heatmap_dir = args.heatmap_dir or "./attention_heatmaps_mc"
     else:
         cache_path = args.cache_path or "./cached_features/val_block18_3600_correct_unpooled_mc.pt"
-        model_path = args.model_path or "best_attention_probe.pt"
-        weights_path = args.weights_path or "best_val_attention_weights.pt"
+        model_path = args.model_path or "./checkpoints/binary/best_binary_attention_probe.pt"
+        weights_path = args.weights_path or "./checkpoints/binary/best_binary_val_attention_weights.pt"
         output_path = args.output_path or "stats_report_binary.md"
         plot_dir = args.plot_dir or "./confusion_matrices_binary"
         heatmap_dir = args.heatmap_dir or "./attention_heatmaps_binary"

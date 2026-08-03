@@ -175,6 +175,10 @@ def train_linear_probe():
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
             patience_counter = 0
+            checkpoint_dir = "./checkpoints/encoder"
+            os.makedirs(checkpoint_dir, exist_ok=True)
+            torch.save(model.state_dict(), os.path.join(checkpoint_dir, "best_encoder_maxpool_probe_binary.pt"))
+            print(f">>> Saved new best encoder maxpool probe model to '{checkpoint_dir}'! <<<")
         else:
             patience_counter += 1
             print(f"Early Stopping Counter: {patience_counter} / {patience}")

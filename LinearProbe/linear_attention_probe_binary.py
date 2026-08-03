@@ -270,32 +270,16 @@ def train_linear_probe():
             best_val_loss = avg_val_loss
             patience_counter = 0
             # Save the model state
-            torch.save(model.state_dict(), "best_attention_probe.pt")
+            checkpoint_dir = "./checkpoints/binary"
+            os.makedirs(checkpoint_dir, exist_ok=True)
+            torch.save(model.state_dict(), os.path.join(checkpoint_dir, "best_binary_attention_probe.pt"))
 
-            # # Identify Worst Mistakes (lowest prob_true)
-            # fps = [
-            #     (vid, info) for vid, info in current_epoch_attention_weights.items()
-            #     if info["binary_label"] == 0 and info["pred_label"] == 1
-            # ]
-            # fns = [
-            #     (vid, info) for vid, info in current_epoch_attention_weights.items()
-            #     if info["binary_label"] == 1 and info["pred_label"] == 0
-            # ]
-
-            # fps.sort(key=lambda x: x[1]["prob_true"])
-            # fns.sort(key=lambda x: x[1]["prob_true"])
-
-            # fp_ids = [vid for vid, _ in fps]
-            # fn_ids = [vid for vid, _ in fns]
-
-            # # Save the attention weights and pre-sorted FP/FN IDs for the validation set of this best epoch
-            # checkpoint_data = {
-            #     "sequences": current_epoch_attention_weights,
-            #     "fps": fp_ids,
-            #     "fns": fn_ids
-            # }
-            # torch.save(checkpoint_data, "best_val_attention_weights.pt")
-            # print(">>> Saved new best model and attention weights with FP/FN IDs! <<<")
+            # Save the attention weights for the best epoch
+            checkpoint_data = {
+                "sequences": current_epoch_attention_weights,
+            }
+            torch.save(checkpoint_data, os.path.join(checkpoint_dir, "best_binary_val_attention_weights.pt"))
+            print(f">>> Saved new best binary model and attention weights to '{checkpoint_dir}'! <<<")
 
             # print("\n--- WORST MISTAKES SUMMARY ---")
             # print("Top False Positives (Normal predicted as Anomalous with high confidence):")
