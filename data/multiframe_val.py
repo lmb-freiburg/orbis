@@ -14,6 +14,10 @@ import sqlite3
 import pandas as pd
 from .utils import get_trajectory_from_speeds_and_yaw_rates
 
+import glob
+import re
+
+
 
 class MultiFrameValidationDataset(Dataset):
     """
@@ -187,5 +191,69 @@ class JSONFramesListLoaderSteering(JSONFramesListLoader):
             'frame_rate': torch.tensor(self.frame_rate).float(),
         }
 
+class BatchWildlifeValidationDataset(Dataset):
+    """
+    Inherent batch loader that automatically parses all wildlife sequences,
+    dynamically slices out their last 5 conditioning frames, and hands them 
+    to PyTorch Lightning as a regular batched tensor.
+    """
+    def __init__(self, root_dir, size=(288, 512)):
+        self.root_dir = root_dir
+        self.size = size
+        self.transform = transforms.Compose([
+            transforms.Resize(self.size),
+            transforms.ToTensor()
+        ])
+        
+        # Auto-discover sequence subdirectories
+        self.sequence_paths = sorted(glob.glob(os.path.join(root_dir, "sequence_*")))
+        if not self.sequence_paths:
+            self.sequence_paths = sorted([
+                os.path.join(root_dir, d) for d in os.listdir(root_dir)
+                if os.path.isdir(os.path.join(root_dir, d))
+            ])
+            
+        self.valid_sequences = []
+        self._prepare_sequences()
+
+    def _prepare_sequences(self):
+        for seq_path in self.sequence_paths:
+            folder_name = os.path.basename(seq_path)
+            match = re.search(r'\d+', folder_name)
+            seq_id = match.group(0) if match else folder_name
+            
+            # Find and sort frames
+            exts = ('*.png', '*.jpg', '*.jpeg', '*.PNG', '*.JPG')
+            frames = []
+            for ext in exts:
+                frames.extend(glob.glob(os.path.join(seq_path, ext)))
+            frames = sorted(frames)
+            
+            if len(frames) >= 5:
+                # Slice out strictly the last 5 context frames
+                self.valid_sequences.append({
+                    "id": seq_id,
+                    "frames": frames[-5:]
+                })
+
+    def __len__(self):
+        return len(self.valid_sequences)
+
+    def __getitem__(self, idx):
+        seq_meta = self.valid_sequences[idx]
+        
+        # Load and stack the 5 frames along the temporal dimension
+        loaded_tensors = []
+        for img_path in seq_meta["frames"]:
+            with Image.open(img_path).convert("RGB") as img:
+                loaded_tensors.append(self.transform(img))
+                
+        # Shape: (5, C, H, W) -> standard Orbis video format expectation
+        video_tensor = torch.stack(loaded_tensors, dim=0)
+        
+        return {
+            "spatial_temporal_tensor": video_tensor,
+            "sequence_id": seq_meta["id"]
+        }
 
     

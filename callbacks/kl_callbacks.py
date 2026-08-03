@@ -72,7 +72,10 @@ class DatasetStatisticsCallback(pl.Callback):
                 # Forward pass through the autoencoder
 
                 x = batch
-                x = x.cuda()
+                # OLD: x = x.cuda()
+                # Get device from autoencoder model
+                device = next(autoencoder.parameters()).device
+                x = x.to(device)
                 x= x.float()
 
                 # Get the latent representation

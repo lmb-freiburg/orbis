@@ -125,6 +125,11 @@ def generate_images(args, unknown_args):
         torch.backends.cudnn.enabled = False
         torch.backends.cudnn.deterministic = True
         seed_everything(args.seed)
+    
+    # Device detection
+    # OLD: Hardcoded to CUDA
+    device = torch.device("mps" if torch.backends.mps.is_available() else (args.device if torch.cuda.is_available() else "cpu"))
+    logger.info(f"Using device: {device}")
         
     # Load config
     config = OmegaConf.load(args.config)
@@ -132,7 +137,8 @@ def generate_images(args, unknown_args):
     model = instantiate_from_config(config.model)
 
     model.load_state_dict(torch.load(args.ckpt)["state_dict"], strict=True)
-    model = model.cuda()
+    # OLD: model = model.cuda()
+    model = model.to(device)
     _ = model.eval()
     
     # Validation data config, if provided
@@ -163,7 +169,8 @@ def generate_images(args, unknown_args):
         # try:
         data_batch = next(loader_iter)
         
-        data_batch = {k: v.cuda() for k, v in data_batch.items() if isinstance(v, torch.Tensor)}
+        # OLD: data_batch = {k: v.cuda() for k, v in data_batch.items() if isinstance(v, torch.Tensor)}
+        data_batch = {k: v.to(device) for k, v in data_batch.items() if isinstance(v, torch.Tensor)}
         data_batch = apply_steering(data_batch, args.steering)
 
         gen_out = model.roll_out(data_batch=data_batch, latent_input=False, **roll_out_args)
@@ -192,7 +199,12 @@ def generate_images(args, unknown_args):
         if args.num_videos is not None and sample_idx >= args.num_videos:
             break
         
-    progress_bar.set_description(f"Max memory: {torch.cuda.max_memory_allocated() / 1024**3:.02f} GB")
+    # OLD: progress_bar.set_description(f"Max memory: {torch.cuda.max_memory_allocated() / 1024**3:.02f} GB")
+    if device.type == "cuda":
+        max_mem_gb = torch.cuda.max_memory_allocated() / 1024**3
+        progress_bar.set_description(f"Max memory: {max_mem_gb:.02f} GB")
+    else:
+        progress_bar.set_description("Device: " + str(device))
 
 
 def parse_args(argv: Optional[List[str]] = None) -> Tuple[argparse.Namespace, List[str]]:
@@ -258,7 +270,8 @@ def parse_args(argv: Optional[List[str]] = None) -> Tuple[argparse.Namespace, Li
         "--device",
         type=str,
         default="cuda",
-        help='Device string (e.g., "cuda", "cuda:0", or "cpu").',
+        # OLD: help='Device string (e.g., "cuda", "cuda:0", or "cpu").',
+        help='Device string (e.g., "cuda", "cuda:0", "mps", or "cpu").',
     )
     parser.add_argument(
         "--num_steps",

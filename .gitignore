@@ -66,3 +66,16 @@ Thumbs.db
 results/
 probing_encoder/
 notes.txt
+*.jpg
+*.pyc
+*.pth
+*.DS_Store
+*.ckpt
+*.gif
+*.png
+*.txt
+*.npy
+*.pt
+*DONTUSE*
+*wandb*
+*manifest*

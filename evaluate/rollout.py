@@ -96,7 +96,8 @@ def generate_images(args: argparse.Namespace, unknown_args: List[str]) -> None:
     seed_everything(args.seed)
 
     # Device
-    device = torch.device(args.device if torch.cuda.is_available() else "cpu")
+    # device = torch.device(args.device if torch.cuda.is_available() else "cpu")
+    device = torch.device("mps" if torch.backends.mps.is_available() else (args.device if torch.cuda.is_available() else "cpu"))
     logger.info(f"Using device: {device}")
 
     # Load and patch model config
@@ -157,7 +158,8 @@ def generate_images(args: argparse.Namespace, unknown_args: List[str]) -> None:
         # Conditioning: take first K frames as input
         cond_x = x[:, :num_condition_frames]
 
-        with torch.autocast(dtype=torch.float16, device_type='cuda'):
+        # OLD: with torch.autocast(dtype=torch.float16, device_type='cuda'):
+        with torch.autocast(dtype=torch.float16, device_type=device.type):
             with torch.no_grad():
                 # model.roll_out returns latents, gen_frames; assume gen_frames: [B, T, C, H, W]
                 latents, gen_frames = model.roll_out(
@@ -212,9 +214,14 @@ def generate_images(args: argparse.Namespace, unknown_args: List[str]) -> None:
             pbar.set_postfix_str(f"samples={sample_idx}")
 
     pbar.close()
+    # OLD: if device.type == "cuda":
+    # OLD:     max_mem_gb = torch.cuda.max_memory_allocated() / 1024**3
+    # OLD:     logger.info(f"Max CUDA memory: {max_mem_gb:.02f} GB")
     if device.type == "cuda":
         max_mem_gb = torch.cuda.max_memory_allocated() / 1024**3
         logger.info(f"Max CUDA memory: {max_mem_gb:.02f} GB")
+    elif device.type == "mps":
+        logger.info("Using Metal Performance Shaders (MPS) - memory tracking unavailable")
 
 
 def build_output_dir(
@@ -291,7 +298,8 @@ def parse_args(argv: Optional[List[str]] = None) -> Tuple[argparse.Namespace, Li
         "--device",
         type=str,
         default="cuda",
-        help='Device string (e.g., "cuda", "cuda:0", or "cpu").',
+        # help='Device string (e.g., "cuda", "cuda:0", or "cpu").',
+        help='Device string (e.g., "cuda", "cuda:0", or "cpu" or "mps").',
     )
     parser.add_argument(
         "--num_steps",

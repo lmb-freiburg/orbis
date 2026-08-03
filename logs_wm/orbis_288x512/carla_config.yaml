@@ -43,15 +43,9 @@ data:
     batch_size: 1
     num_workers: 4
     validation:
-      target: data.multiframe_val.MultiFrameFromPaths
+      target: data.multiframe_val.BatchWildlifeValidationDataset
       params:
-        num_frames: 5
-        image_paths:
-        - imgs/example/frame_0000.jpg
-        - imgs/example/frame_0001.jpg
-        - imgs/example/frame_0002.jpg
-        - imgs/example/frame_0003.jpg
-        - imgs/example/frame_0004.jpg
+        root_dir: "../carla_wildlife_sequences/raw_data"
         size:
         - 288
         - 512

@@ -224,6 +224,8 @@ class WindowAttention(nn.Module):
         self.softmax = nn.Softmax(dim=-1)
 
     def old_attn(self, q, k, v, B_, N, relative_position_bias, mask=None):
+        # Cast v to match q dtype (fixes mixed precision issues)
+        v = v.to(q.dtype)
         q = q * self.scale
         attn = (q @ k.transpose(-2, -1))
         attn = attn + relative_position_bias.unsqueeze(0)        
@@ -245,6 +247,8 @@ class WindowAttention(nn.Module):
             num_win = mask.shape[0]
             mask = mask.view(1, num_win, 1, N, N).expand(B_ // num_win, -1, self.num_heads, -1, -1)
             attn_mask = attn_mask + mask.reshape(-1, self.num_heads, N, N)
+        # Cast v to match q dtype (fixes mixed precision issues)
+        v = v.to(q.dtype)
         x = torch.nn.functional.scaled_dot_product_attention(
             q, k, v,
             attn_mask=attn_mask,
