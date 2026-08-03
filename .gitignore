@@ -61,3 +61,8 @@ DoTA_training/
 
 # OS-specific
 Thumbs.db
+
+
+results/
+probing_encoder/
+notes.txt
