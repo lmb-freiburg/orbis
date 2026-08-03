@@ -1,3 +1,71 @@
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+.conda/
+conda-env/
+.python-version
+
+# Jupyter / notebooks
+.ipynb_checkpoints/
+
+# PyTorch / training artifacts
+*.ckpt
+*.pt
+*.pth
+*.jpg
+*.bin
+*.safetensors
+*.onnx
+checkpoints/
+saved_models/
+lightning_logs/
+tensorboard_logs/
+wandb/
+outputs/
+logs/
+logs_tk/
+logs_wm/
+
+# datasets
+DoTA_prepared/
+DoTA_oncoming/
+annotations/
+results_pt/
+results/
+DoTA_pedestrian/
+DoTA_class/
+DoTA_class*/
+DoTA_prepared*/
+DoTA_training/
+
+# Temporary / generated files
+*.tmp
+*.temp
+*.log
+*.out
+*.pid
+*.swp
+*.swo
+.DS_Store
+
+# IDE / editor files
+.vscode/
+.idea/
+
+# OS-specific
+Thumbs.db
+
+
+results/
+probing_encoder/
+notes.txt
 *.jpg
 *.pyc
 *.pth

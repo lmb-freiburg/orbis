@@ -413,7 +413,6 @@ class VQModelIF(VQModel):
             "continuous": (h, h2)
         }
         return ret
-    
 
     def decode(self, quant):
         if isinstance(quant, tuple):
