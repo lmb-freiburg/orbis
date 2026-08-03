@@ -24,7 +24,7 @@ if str(PROJECT_ROOT) not in sys.path:
 # 3. Direct imports from scorer.py and util.py
 from util import instantiate_from_config
 from scoring.scorer_batch_norm import (
-    surprise_score_semantic,
+    surprise_score,
     get_sorted_frame_paths,
     load_clip_as_window,
     get_device,
@@ -33,14 +33,15 @@ from scoring.scorer_batch_norm import (
 RESULTS_DIR = "results"
 
 
-def normalize_map_with_calib(raw_map, t_val, calib_stats, eps=1e-8):
+def normalize_map_with_calib(raw_map, t_val, calib_stats, head, eps=1e-8):
     """
     raw_map: [H, W] PyTorch tensor.
-    calib_stats: loaded dict from calib_stats.pt
+    calib_stats: loaded nested dict from calib_stats_detailed_semantic.pt
+    head: string ("detailed" or "semantic")
     """
-    # Ensure mean and std match the device of raw_map (e.g., mps or cuda or cpu)
-    mean = calib_stats[t_val]["mean"].to(raw_map.device)
-    std = calib_stats[t_val]["std"].to(raw_map.device)
+    # Extract head-specific calibration stats
+    mean = calib_stats[head][t_val]["mean"].to(raw_map.device)
+    std = calib_stats[head][t_val]["std"].to(raw_map.device)
     
     # Standardize (Z-Score)
     z_map = (raw_map - mean) / (std + eps)
@@ -64,116 +65,102 @@ def plot_and_overlay(
     t_grid, 
     calib_stats, 
     device, 
-    n_noise_samples=4, 
+    heads=["detailed", "semantic"],
+    n_noise_samples=2, 
     z_vmax=3.0,
     z_threshold=1.0,
     use_minmax=False,
     output_dir_override=None,
     eps=1e-8
 ):
-    """
-    Computes error map, normalizes with calib_stats, and plots heatmaps alongside raw target frame.
-    Layout Order: [Original Frame] -> [Avg Across t] -> [t1, t2, ...]
-    """
     paths = get_sorted_frame_paths(folder_path)
     window = load_clip_as_window(paths).unsqueeze(0).to(device)
     frame_rate = torch.full((1,), 5.0).to(device)
 
-    # 1. Compute raw error maps on the fly
-    per_t_map = surprise_score_semantic(model, window, frame_rate, t_grid, n_noise_samples=n_noise_samples)
-
-    # 2. Load background target frame
+    # 1. Compute raw error maps for requested heads
+    per_t_maps = surprise_score(model, window, frame_rate, t_grid, heads=heads, n_noise_samples=n_noise_samples)
     target_frame = load_target_frame(folder_path, frame_index=10, size=(512, 288))
     
-    # 3. Handle output directory override
-    if output_dir_override:
-        output_dir = output_dir_override
-    else:
-        output_dir = f"{RESULTS_DIR}/batch_norm/{clip_id}"
+    output_dir = output_dir_override if output_dir_override else f"results/batch_norm/{clip_id}"
     os.makedirs(output_dir, exist_ok=True)
 
-    # 4. Standardize maps across all timesteps first
-    z_maps_list = []
-    z_up_np_dict = {}
-
-    for t_val in t_grid:
-        raw_map = per_t_map[t_val]
-        z_map = normalize_map_with_calib(raw_map, t_val, calib_stats)
-        z_maps_list.append(z_map)
-        
-        # Upsample to full image resolution [288, 512]
-        z_map_4d = z_map.unsqueeze(0).unsqueeze(0).float()
-        z_up = F.interpolate(z_map_4d, size=(288, 512), mode="bilinear", align_corners=False)
-        z_up_np_dict[t_val] = z_up.squeeze().cpu().numpy()
-
-    # Compute Average Z-map across all t
-    z_map_avg = torch.stack(z_maps_list).mean(dim=0)
-    z_map_avg_4d = z_map_avg.unsqueeze(0).unsqueeze(0).float()
-    z_up_avg = F.interpolate(z_map_avg_4d, size=(288, 512), mode="bilinear", align_corners=False)
-    z_up_avg_np = z_up_avg.squeeze().cpu().numpy()
-
-    # Columns: [Original Frame] + [Avg Across t] + [t1, t2, ...]
+    # 2. Setup 2-row figure (Row 0 = Detailed, Row 1 = Semantic)
+    n_rows = len(heads)
     n_cols = len(t_grid) + 2
-    fig, axes = plt.subplots(1, n_cols, figsize=(3.5 * n_cols, 3))
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(3.5 * n_cols, 3.0 * n_rows))
 
-    axes[0].imshow(target_frame)
-    axes[0].set_title("Original Frame")
-    axes[0].axis("off")
+    if n_rows == 1:
+        axes = np.expand_dims(axes, axis=0)
 
-    if use_minmax:
-        avg_min, avg_max = z_up_avg_np.min(), z_up_avg_np.max()
-        z_avg_proc = (z_up_avg_np - avg_min) / (avg_max - avg_min + eps)
-        z_avg_masked = np.ma.masked_where(z_avg_proc < 0.2, z_avg_proc)
-        cbar_label = "Relative Intensity [0, 1]"
-        curr_vmin, curr_vmax = 0.2, 1.0
-    else:
-        z_avg_masked = np.ma.masked_where(z_up_avg_np < z_threshold, z_up_avg_np)
-        cbar_label = "Std Deviations ($\sigma$)"
-        curr_vmin, curr_vmax = z_threshold, z_vmax
+    for row_idx, head in enumerate(heads):
+        z_maps_list = []
+        z_up_np_dict = {}
 
-    axes[1].imshow(target_frame)
-    im_avg = axes[1].imshow(z_avg_masked, cmap="jet", alpha=0.6, vmin=curr_vmin, vmax=curr_vmax)
-    axes[1].set_title("Avg Across t", fontweight="bold")
-    axes[1].axis("off")
+        for t_val in t_grid:
+            raw_map = per_t_maps[head][t_val]
+            z_map = normalize_map_with_calib(raw_map, t_val, calib_stats, head=head, eps=eps)
+            z_maps_list.append(z_map)
+            
+            z_map_4d = z_map.unsqueeze(0).unsqueeze(0).float()
+            z_up = F.interpolate(z_map_4d, size=(288, 512), mode="bilinear", align_corners=False)
+            z_up_np_dict[t_val] = z_up.squeeze().cpu().numpy()
 
-    # --- PANELS 3..N: Individual t noise levels ---
-    for i, t_val in enumerate(t_grid):
-        z_up_np = z_up_np_dict[t_val]
+        z_map_avg = torch.stack(z_maps_list).mean(dim=0)
+        z_map_avg_4d = z_map_avg.unsqueeze(0).unsqueeze(0).float()
+        z_up_avg = F.interpolate(z_map_avg_4d, size=(288, 512), mode="bilinear", align_corners=False)
+        z_up_avg_np = z_up_avg.squeeze().cpu().numpy()
 
+        # Col 0: Raw Frame
+        axes[row_idx, 0].imshow(target_frame)
+        axes[row_idx, 0].set_title(f"{head.capitalize()} — Frame")
+        axes[row_idx, 0].axis("off")
+
+        # Col 1: Average Map Across t
         if use_minmax:
-            z_min, z_max = z_up_np.min(), z_up_np.max()
-            z_proc = (z_up_np - z_min) / (z_max - z_min + eps)
-            z_masked = np.ma.masked_where(z_proc < 0.2, z_proc)
+            avg_min, avg_max = z_up_avg_np.min(), z_up_avg_np.max()
+            z_avg_proc = (z_up_avg_np - avg_min) / (avg_max - avg_min + eps)
+            z_avg_masked = np.ma.masked_where(z_avg_proc < 0.2, z_avg_proc)
             curr_vmin, curr_vmax = 0.2, 1.0
-            title_suffix = "(Min-Max)"
         else:
-            z_masked = np.ma.masked_where(z_up_np < z_threshold, z_up_np)
+            z_avg_masked = np.ma.masked_where(z_up_avg_np < z_threshold, z_up_avg_np)
             curr_vmin, curr_vmax = z_threshold, z_vmax
-            title_suffix = ""
 
-        ax_idx = i + 2  # Offset by 2 (Original + Avg)
-        axes[ax_idx].imshow(target_frame)
-        im = axes[ax_idx].imshow(z_masked, cmap="jet", alpha=0.55, vmin=curr_vmin, vmax=curr_vmax)
-        axes[ax_idx].set_title(f"t={t_val} {title_suffix}".strip())
-        axes[ax_idx].axis("off")
+        axes[row_idx, 1].imshow(target_frame)
+        im_avg = axes[row_idx, 1].imshow(z_avg_masked, cmap="jet", alpha=0.6, vmin=curr_vmin, vmax=curr_vmax)
+        axes[row_idx, 1].set_title("Avg Across t", fontweight="bold")
+        axes[row_idx, 1].axis("off")
 
-    # Colorbar attached to the summary map
-    cbar = fig.colorbar(im_avg, ax=axes, orientation="vertical", fraction=0.012, pad=0.02)
-    cbar.set_label(cbar_label, fontsize=10)
-    
+        # Cols 2..N: Timesteps
+        for i, t_val in enumerate(t_grid):
+            z_up_np = z_up_np_dict[t_val]
+            if use_minmax:
+                z_min, z_max = z_up_np.min(), z_up_np.max()
+                z_proc = (z_up_np - z_min) / (z_max - z_min + eps)
+                z_masked = np.ma.masked_where(z_proc < 0.2, z_proc)
+                curr_vmin, curr_vmax = 0.2, 1.0
+            else:
+                z_masked = np.ma.masked_where(z_up_np < z_threshold, z_up_np)
+                curr_vmin, curr_vmax = z_threshold, z_vmax
+
+            col_idx = i + 2
+            axes[row_idx, col_idx].imshow(target_frame)
+            axes[row_idx, col_idx].imshow(z_masked, cmap="jet", alpha=0.55, vmin=curr_vmin, vmax=curr_vmax)
+            axes[row_idx, col_idx].set_title(f"t={t_val}")
+            axes[row_idx, col_idx].axis("off")
+
     mode_str = "MinMax" if use_minmax else "ZScore"
-    fig.suptitle(f"{clip_id} ({sample_label}) — Calibrated Heatmap [{mode_str}]", fontsize=13)
+    fig.suptitle(f"{clip_id} ({sample_label}) — Detailed & Semantic [{mode_str}]", fontsize=14)
     
-    save_path = f"{output_dir}/overlay_{sample_label.lower()}_{mode_str.lower()}.png"
+    save_path = f"{output_dir}/overlay_{sample_label.lower()}_combined_{mode_str.lower()}.png"
     fig.savefig(save_path, dpi=200, bbox_inches="tight")
     plt.close(fig)
-    print(f"Saved: {save_path}")
 
 if __name__ == "__main__":
     device = get_device()
     print(f"Using device: {device}")
     
     t_grid = [0.2, 0.4, 0.6, 0.8]
+    HEADS = ["detailed", "semantic"]
     
     # Load model
     exp_dir = "logs_wm/orbis_288x512"
@@ -183,19 +170,18 @@ if __name__ == "__main__":
     model.load_state_dict(state, strict=True)
     model = model.to(device).eval()
 
-    # Load calibration statistics produced by scorer.py
-    calib_stats_path = f"{RESULTS_DIR}_pt/calib_stats.pt"  # Fixed folder name to match previous script output
+    # Load multi-head calibration statistics
+    calib_stats_path = "results/calib_stats_detailed_semantic.pt"
     if not os.path.exists(calib_stats_path):
-        # Fallback check
-        calib_stats_path = "results/calib_stats.pt"
+        calib_stats_path = f"{RESULTS_DIR}/calib_stats.pt"
         if not os.path.exists(calib_stats_path):
-            raise FileNotFoundError("Missing calib_stats.pt. Please run calibration script first.")
+            raise FileNotFoundError("Missing calibration stats file. Please run the calibration script first.")
 
     calib_stats = torch.load(calib_stats_path, weights_only=True)
 
     test_clip_id = "D_pyFV4nKd4_003993"
 
-    # Plot Non-OOD Sample
+    # Plot Normal Sample for both Detailed & Semantic
     plot_and_overlay(
         model=model,
         clip_id=test_clip_id,
@@ -204,11 +190,12 @@ if __name__ == "__main__":
         t_grid=t_grid,
         calib_stats=calib_stats,
         device=device,
-        use_minmax=True,
-        z_vmax=3.0,  # Max intensity scaling for matplotlib
+        heads=HEADS,
+        use_minmax=False,
+        z_vmax=3.0,
     )
 
-    # Plot OOD Sample
+    # Plot Anomaly Sample for both Detailed & Semantic
     plot_and_overlay(
         model=model,
         clip_id=test_clip_id,
@@ -216,7 +203,8 @@ if __name__ == "__main__":
         sample_label="Anomaly",
         t_grid=t_grid,
         calib_stats=calib_stats,
-        use_minmax=True,
         device=device,
+        heads=HEADS,
+        use_minmax=False,
         z_vmax=3.0,
     )
