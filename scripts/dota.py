@@ -464,8 +464,10 @@ def get_dota_dataloaders(
 
 
 if __name__ == "__main__":
-    SEQ_DIR = Path("/Volumes/maccbeast/frames/")
-    ANNO_DIR = Path("annotations")
+    # SEQ_DIR = Path("/Volumes/maccbeast/frames/")
+    # ANNO_DIR = Path("annotations")
+    SEQ_DIR = Path("../DOTA_sequences")
+    ANNO_DIR = Path("../DOTA_annotations")
     
     # Global Parameters
     TARGET_FRAMES = 6 
