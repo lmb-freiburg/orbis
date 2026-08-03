@@ -45,9 +45,9 @@ def load_clip_as_window(frame_paths, size=(512, 288)):
     return torch.stack(frames)
 
 
-# ---------- scorer: detailed and combined heads only (MPS-optimized) ----------
+# ---------- parameterized scorer: runs only specified inference passes ----------
 @torch.no_grad()
-def surprise_score_detailed_combined(model, images, frame_rate, t_grid, n_noise_samples=2, use_ema=False):
+def surprise_score(model, images, frame_rate, t_grid, heads, n_noise_samples=2, use_ema=False):
     net = model.ema_vit if use_ema else model.vit
     net.eval()
     
@@ -60,41 +60,69 @@ def surprise_score_detailed_combined(model, images, frame_rate, t_grid, n_noise_
     context_exp = context.repeat_interleave(n_noise_samples, dim=0)
     target_exp = target.repeat_interleave(n_noise_samples, dim=0)
 
-    per_t_maps = {
-        "detailed": {},
-        "combined": {}
-    }
-
+    # Dynamically initialize output based on requested heads
+    per_t_maps = {h: {} for h in heads}
     is_mps = x.device.type == "mps"
 
     for t_val in t_grid:
         t = torch.full((b * n_noise_samples,), t_val, device=x.device)
-        
-        target_t, noise = model.add_noise(target_exp, t)
         fr = frame_rate.repeat_interleave(n_noise_samples, dim=0) if frame_rate.numel() > 1 else frame_rate
 
-        # Autocast for FP16 speedup on MPS
-        if is_mps:
-            with torch.autocast(device_type="mps", dtype=torch.float16):
-                pred = net(target_t, context_exp, t, frame_rate=fr)
-        else:
-            pred = net(target_t, context_exp, t, frame_rate=fr)
-        
-        true_v = model.A(t) * target_exp + model.B(t) * noise
-        
-        err = (pred.float() - true_v.float()) ** 2  # [B*N, 1, C, H, W]
-        
-        # Reshape and average across noise samples: [B, 1, C, H, W]
-        err_avg = err.view(b, n_noise_samples, 1, n_channels, err.shape[-2], err.shape[-1]).mean(dim=1)
-        
-        detailed_err = err_avg[:, :, :half]
-        
-        # Channel mean -> squeeze to [H, W] (assumes B=1)
-        detailed_map = detailed_err.mean(dim=2).squeeze(0).squeeze(0)
-        combined_map = err_avg.mean(dim=2).squeeze(0).squeeze(0)
+        # Helper function to run a single isolated pass
+        def run_inference_pass(ctx, tgt, err_start_idx, err_end_idx):
+            tgt_t, noise = model.add_noise(tgt, t)
+            
+            if is_mps:
+                # with torch.autocast(device_type="mps", dtype=torch.float16):
+                pred = net(tgt_t, ctx, t, frame_rate=fr)
+            else:
+                pred = net(tgt_t, ctx, t, frame_rate=fr)
+            
+            true_v = model.A(t) * tgt + model.B(t) * noise
+            err = (pred.float() - true_v.float()) ** 2
+            
+            # Reshape: [B, N_noise, 1, C, H, W] -> average across noise samples
+            err_avg = err.view(b, n_noise_samples, 1, n_channels, err.shape[-2], err.shape[-1]).mean(dim=1)
+            
+            # Extract MSE only for the active channels we are evaluating
+            active_err = err_avg[:, :, err_start_idx:err_end_idx]
+            
+            # Channel mean -> squeeze to [H, W]
+            return active_err.mean(dim=2).squeeze(0).squeeze(0)
 
-        per_t_maps["detailed"][t_val] = detailed_map
-        per_t_maps["combined"][t_val] = combined_map
+        # ---------------------------------------------------------
+        # PASS 1: DETAILED ONLY
+        # ---------------------------------------------------------
+        if "detailed" in heads:
+            ctx_detailed = context_exp.clone()
+            tgt_detailed = target_exp.clone()
+            ctx_detailed[:, :, half:, :, :] = 0  
+            tgt_detailed[:, :, half:, :, :] = 0  
+            
+            per_t_maps["detailed"][t_val] = run_inference_pass(
+                ctx_detailed, tgt_detailed, err_start_idx=0, err_end_idx=half
+            )
+
+        # ---------------------------------------------------------
+        # PASS 2: SEMANTIC ONLY
+        # ---------------------------------------------------------
+        if "semantic" in heads:
+            ctx_semantic = context_exp.clone()
+            tgt_semantic = target_exp.clone()
+            ctx_semantic[:, :, :half, :, :] = 0
+            tgt_semantic[:, :, :half, :, :] = 0
+            
+            per_t_maps["semantic"][t_val] = run_inference_pass(
+                ctx_semantic, tgt_semantic, err_start_idx=half, err_end_idx=n_channels
+            )
+
+        # ---------------------------------------------------------
+        # PASS 3: COMBINED
+        # ---------------------------------------------------------
+        if "combined" in heads:
+            per_t_maps["combined"][t_val] = run_inference_pass(
+                context_exp, target_exp, err_start_idx=0, err_end_idx=n_channels
+            )
 
     return per_t_maps
 
@@ -110,7 +138,6 @@ class MultiHeadWelfordAccumulator:
         self.M2 = {h: {t: torch.zeros(shape, device=device) for t in t_grid} for h in heads}
 
     def update(self, t_val, head_maps):
-        """head_maps: dict mapping head_name -> [H, W] tensor for this sample and t."""
         self.n[t_val] += 1
         n = self.n[t_val]
         
@@ -148,7 +175,9 @@ if __name__ == "__main__":
 
     t_grid = [0.2, 0.4, 0.6, 0.8]
     N_NOISE_SAMPLES = 2
-    HEADS = ["detailed", "combined"]
+    
+    # Configure your variants here. The calculation loop will dynamically adjust.
+    HEADS = ["detailed", "semantic"]
 
     with open("DoTA_prepared/manifest_subset1500.json") as f:
         manifest = json.load(f)
@@ -156,12 +185,17 @@ if __name__ == "__main__":
     # Infer map shape from first sample
     first_clip = manifest[0]["clip_id"]
     first_folder = str(Path("DoTA_prepared") / first_clip / "non-ood")
-    probe_maps = surprise_score_detailed_combined(
+    probe_maps = surprise_score(
         model,
         load_clip_as_window(get_sorted_frame_paths(first_folder)).unsqueeze(0).to(device),
-        torch.full((1,), 5.0).to(device), t_grid, n_noise_samples=1,
+        torch.full((1,), 5.0).to(device), 
+        t_grid,
+        heads=HEADS,
+        n_noise_samples=1,
     )
-    map_shape = probe_maps["detailed"][t_grid[0]].shape  # (H, W)
+    
+    # Use the first requested head to grab the shape map dynamically
+    map_shape = probe_maps[HEADS[0]][t_grid[0]].shape
     print(f"Per-token map shape: {map_shape}")
 
     accumulator = MultiHeadWelfordAccumulator(map_shape, t_grid, HEADS, device)
@@ -175,17 +209,21 @@ if __name__ == "__main__":
             window = load_clip_as_window(paths).unsqueeze(0).to(device)
             frame_rate = torch.full((1,), 5.0).to(device)
             
-            per_t_maps = surprise_score_detailed_combined(model, window, frame_rate, t_grid, N_NOISE_SAMPLES)
+            per_t_maps = surprise_score(model, window, frame_rate, t_grid, heads=HEADS, n_noise_samples=N_NOISE_SAMPLES)
             
             for t_val in t_grid:
                 head_maps_at_t = {h: per_t_maps[h][t_val] for h in HEADS}
                 accumulator.update(t_val, head_maps_at_t)
 
-            # Periodically clear MPS cache every 50 iterations to avoid unified memory bloat
             if device.type == "mps" and i % 50 == 0:
                 torch.mps.empty_cache()
 
-    # Finalize and write ONLY at the very end
+    # Finalize and write
     calib_stats = accumulator.finalize()
-    torch.save(calib_stats, f"{RESULTS_DIR}/calib_stats_detailed_combined.pt")
-    print(f"Saved detailed and combined stats to {RESULTS_DIR}/calib_stats_detailed_combined.pt (n={calib_stats['detailed'][t_grid[0]]['n']})")
+    
+    # Generate dynamic filename based on chosen heads
+    filename_suffix = "_".join(HEADS)
+    save_path = f"{RESULTS_DIR}/calib_stats_{filename_suffix}.pt"
+    
+    torch.save(calib_stats, save_path)
+    print(f"Saved stats to {save_path} (n={calib_stats[HEADS[0]][t_grid[0]]['n']})")

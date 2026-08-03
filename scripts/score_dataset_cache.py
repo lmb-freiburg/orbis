@@ -167,20 +167,10 @@ def parse_args():
     parser.add_argument("--ckpt", type=str, default="checkpoints/last.ckpt")
     parser.add_argument("--seq_dir", type=str, default="/Volumes/maccbeast/frames/")
     parser.add_argument("--anno_dir", type=str, default="annotations/")
-    parser.add_argument(
-        "--num_workers",
-        type=int,
-        default=6,
-        help="Optimal CPU worker threads for n1-standard-8 (8 vCPUs).",
-    )
+    parser.add_argument("--num_workers", type=int, default=6, help="Optimal CPU worker threads for n1-standard-8 (8 vCPUs).",)
     parser.add_argument("--save_dir", type=str, default="results")
     parser.add_argument("--out_name", type=str, default="sample_scores.pt")
-    parser.add_argument(
-        "--checkpoint_interval",
-        type=int,
-        default=50,
-        help="Save a partial checkpoint every N scored clips.",
-    )
+    parser.add_argument("--checkpoint_interval", type=int, default=50, help="Save a partial checkpoint every N scored clips.",)
     parser.add_argument(
         "--max_samples",
         type=int,

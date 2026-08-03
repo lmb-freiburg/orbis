@@ -11,7 +11,7 @@ import torch
 from omegaconf import OmegaConf
 
 # Import multi-head helper functions and models
-from plotter_batch_norm2 import plot_and_overlay, get_device, instantiate_from_config
+from scoring.plotter_batch_norm import plot_and_overlay, get_device, instantiate_from_config
 
 # --- Config & Paths ---
 PROJECT_ROOT = Path(__file__).resolve().parent
