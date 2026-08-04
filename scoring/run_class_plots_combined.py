@@ -1,4 +1,5 @@
 import json
+import sys
 import os
 import warnings
 from pathlib import Path
@@ -10,18 +11,23 @@ warnings.filterwarnings("ignore", category=UserWarning, module="torchvision.io.i
 import torch
 from omegaconf import OmegaConf
 
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.append(str(PROJECT_ROOT))
+
 # Import multi-head helper functions and models
 from scoring.plotter_batch_norm import plot_and_overlay, get_device, instantiate_from_config
 
 # --- Config & Paths ---
-PROJECT_ROOT = Path(__file__).resolve().parent
-ORBIS_ROOT = PROJECT_ROOT.parent
+ORBIS_ROOT = Path(__file__).resolve().parent.parent  # Points to /Users/aniket/REPOS/meas-ret/orbis
+PROJECT_ROOT = Path(__file__).resolve().parent      # Points to /Users/aniket/REPOS/meas-ret/orbis/scoring
+
 MANIFEST_PATH = ORBIS_ROOT / "DoTA_class" / "manifest_dota_classes.json"
 
-# Output directory updated to batch_norms2/combined
-OUTPUT_BASE_DIR = ORBIS_ROOT / "results" / "batch_norms2" / "combined"
+# Output directory updated to batch_norm_3000/combined
+OUTPUT_BASE_DIR = ORBIS_ROOT / "results" / "batch_norm_3000" / "combined"
 # Calibration stats set to combined.pt
-CALIB_STATS_PATH = ORBIS_ROOT / "results" / "calib_stats_combined.pt"
+CALIB_STATS_PATH = ORBIS_ROOT / "results" / "calib_stats_3000" / "calib_stats_combined.pt"
 EXP_DIR = ORBIS_ROOT / "logs_wm" / "orbis_288x512"
 
 T_GRID = [0.2, 0.4, 0.6, 0.8]
@@ -70,7 +76,7 @@ def main():
 
     # 3. Load Combined Calibration Stats
     if not CALIB_STATS_PATH.exists():
-        fallback_path = ORBIS_ROOT / "results" / "calib_stats.pt"
+        fallback_path = ORBIS_ROOT / "results" / "calib_stats_3000" / "calib_stats_combined.pt"
         if fallback_path.exists():
             print(f"Combined stats not found at {CALIB_STATS_PATH}, falling back to {fallback_path}")
             CALIB_STATS_PATH = fallback_path

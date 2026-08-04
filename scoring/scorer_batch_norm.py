@@ -87,8 +87,8 @@ def surprise_score(model, images, frame_rate, t_grid, heads, n_noise_samples=2, 
             # Extract MSE only for the active channels we are evaluating
             active_err = err_avg[:, :, err_start_idx:err_end_idx]
             
-            # Channel mean -> squeeze to [H, W]
-            return active_err.mean(dim=2).squeeze(0).squeeze(0)
+            # Channel mean -> squeeze to [C, H, W]
+            return active_err.squeeze(0).squeeze(0)
 
         # ---------------------------------------------------------
         # PASS 1: DETAILED ONLY
