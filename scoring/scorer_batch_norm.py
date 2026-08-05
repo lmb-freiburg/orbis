@@ -45,7 +45,6 @@ def load_clip_as_window(frame_paths, size=(512, 288)):
     return torch.stack(frames)
 
 
-# ---------- parameterized scorer: runs only specified inference passes ----------
 @torch.no_grad()
 def surprise_score(model, images, frame_rate, t_grid, heads, n_noise_samples=2, use_ema=False):
     net = model.ema_vit if use_ema else model.vit
@@ -69,7 +68,7 @@ def surprise_score(model, images, frame_rate, t_grid, heads, n_noise_samples=2, 
         fr = frame_rate.repeat_interleave(n_noise_samples, dim=0) if frame_rate.numel() > 1 else frame_rate
 
         # Helper function to run a single isolated pass
-        def run_inference_pass(ctx, tgt, err_start_idx, err_end_idx):
+        def run_inference_pass(ctx, tgt):
             tgt_t, noise = model.add_noise(tgt, t)
             
             if is_mps:
@@ -83,49 +82,33 @@ def surprise_score(model, images, frame_rate, t_grid, heads, n_noise_samples=2, 
             
             # Reshape: [B, N_noise, 1, C, H, W] -> average across noise samples
             err_avg = err.view(b, n_noise_samples, 1, n_channels, err.shape[-2], err.shape[-1]).mean(dim=1)
-            
-            # Extract MSE only for the active channels we are evaluating
-            active_err = err_avg[:, :, err_start_idx:err_end_idx]
-            
+        
             # Channel mean -> squeeze to [H, W]
-            return active_err.squeeze(0).squeeze(0)
+            return err_avg.squeeze(0).squeeze(0)
 
+        combined_scores = run_inference_pass(
+            context_exp, target_exp
+        )
+        
         # ---------------------------------------------------------
         # PASS 1: DETAILED ONLY
         # ---------------------------------------------------------
         if "detailed" in heads:
-            ctx_detailed = context_exp.clone()
-            tgt_detailed = target_exp.clone()
-            ctx_detailed[:, :, half:, :, :] = 0  
-            tgt_detailed[:, :, half:, :, :] = 0  
-            
-            per_t_maps["detailed"][t_val] = run_inference_pass(
-                ctx_detailed, tgt_detailed, err_start_idx=0, err_end_idx=half
-            )
+            per_t_maps["detailed"][t_val] =  combined_scores[:half, :, :]  
 
         # ---------------------------------------------------------
         # PASS 2: SEMANTIC ONLY
         # ---------------------------------------------------------
         if "semantic" in heads:
-            ctx_semantic = context_exp.clone()
-            tgt_semantic = target_exp.clone()
-            ctx_semantic[:, :, :half, :, :] = 0
-            tgt_semantic[:, :, :half, :, :] = 0
-            
-            per_t_maps["semantic"][t_val] = run_inference_pass(
-                ctx_semantic, tgt_semantic, err_start_idx=half, err_end_idx=n_channels
-            )
+            per_t_maps["semantic"][t_val] =  combined_scores[half:, :, :]
 
         # ---------------------------------------------------------
         # PASS 3: COMBINED
         # ---------------------------------------------------------
         if "combined" in heads:
-            per_t_maps["combined"][t_val] = run_inference_pass(
-                context_exp, target_exp, err_start_idx=0, err_end_idx=n_channels
-            )
+            per_t_maps["combined"][t_val] = combined_scores
 
     return per_t_maps
-
 
 # ---------- Welford running mean/variance ----------
 class MultiHeadWelfordAccumulator:
@@ -177,7 +160,7 @@ if __name__ == "__main__":
     N_NOISE_SAMPLES = 2
     
     # Configure your variants here. The calculation loop will dynamically adjust.
-    HEADS = ["detailed", "semantic"]
+    HEADS = ["combined"]
 
     with open("DoTA_prepared/manifest_subset1500.json") as f:
         manifest = json.load(f)
@@ -202,7 +185,7 @@ if __name__ == "__main__":
 
     for i, clip in enumerate(tqdm(manifest, desc="Processing calib clips")):
         if clip.get("non_ood_split") == "calib":
-            clip_dir = Path("DoTA_prepared") / clip["clip_id"]
+            clip_dir = Path("DoTA_class") / clip["clip_id"]
             folder = str(clip_dir / "non-ood")
             
             paths = get_sorted_frame_paths(folder)
