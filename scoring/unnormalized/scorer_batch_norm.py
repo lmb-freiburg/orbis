@@ -11,13 +11,14 @@ import torch
 from omegaconf import OmegaConf
 from tqdm import tqdm
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.append(str(PROJECT_ROOT))
+
 from util import instantiate_from_config
 
-RESULTS_DIR = "results_pt"
-os.makedirs(f"{RESULTS_DIR}", exist_ok=True)
+RESULTS_DIR = PROJECT_ROOT / "results_pt"
+os.makedirs(RESULTS_DIR, exist_ok=True)
 
 
 def get_device():
@@ -45,7 +46,6 @@ def load_clip_as_window(frame_paths, size=(512, 288)):
     return torch.stack(frames)
 
 
-# ---------- parameterized scorer: runs only specified inference passes ----------
 @torch.no_grad()
 def surprise_score(model, images, frame_rate, t_grid, heads, n_noise_samples=2, use_ema=False):
     net = model.ema_vit if use_ema else model.vit
@@ -60,82 +60,49 @@ def surprise_score(model, images, frame_rate, t_grid, heads, n_noise_samples=2, 
     context_exp = context.repeat_interleave(n_noise_samples, dim=0)
     target_exp = target.repeat_interleave(n_noise_samples, dim=0)
 
-    # Dynamically initialize output based on requested heads
     per_t_maps = {h: {} for h in heads}
     is_mps = x.device.type == "mps"
+
+    ## unnormalized - semantic, detailed, combined
+    ## normalized - semantic, detailed, combined - use 3000 calib stats for normalization (min-max)
 
     for t_val in t_grid:
         t = torch.full((b * n_noise_samples,), t_val, device=x.device)
         fr = frame_rate.repeat_interleave(n_noise_samples, dim=0) if frame_rate.numel() > 1 else frame_rate
 
-        # Helper function to run a single isolated pass
-        def run_inference_pass(ctx, tgt, err_start_idx, err_end_idx):
-            tgt_t, noise = model.add_noise(tgt, t)
-            
-            if is_mps:
-                # with torch.autocast(device_type="mps", dtype=torch.float16):
-                pred = net(tgt_t, ctx, t, frame_rate=fr)
-            else:
-                pred = net(tgt_t, ctx, t, frame_rate=fr)
-            
-            true_v = model.A(t) * tgt + model.B(t) * noise
-            err = (pred.float() - true_v.float()) ** 2
-            
-            # Reshape: [B, N_noise, 1, C, H, W] -> average across noise samples
-            err_avg = err.view(b, n_noise_samples, 1, n_channels, err.shape[-2], err.shape[-1]).mean(dim=1)
-            
-            # Extract MSE only for the active channels we are evaluating
-            active_err = err_avg[:, :, err_start_idx:err_end_idx]
-            
-            # Channel mean -> squeeze to [H, W]
-            return active_err.squeeze(0).squeeze(0)
+        tgt_t, noise = model.add_noise(target_exp, t)
+        
+        if is_mps:
+            pred = net(tgt_t, context_exp, t, frame_rate=fr)
+        else:
+            pred = net(tgt_t, context_exp, t, frame_rate=fr)
+        
+        true_v = model.A(t) * target_exp + model.B(t) * noise
+        err = (pred.float() - true_v.float()) ** 2
+        
+        err_avg = err.view(b, n_noise_samples, 1, n_channels, err.shape[-2], err.shape[-1]).mean(dim=1)
+        err_spatial = err_avg.squeeze(0).squeeze(0)
 
-        # ---------------------------------------------------------
-        # PASS 1: DETAILED ONLY
-        # ---------------------------------------------------------
         if "detailed" in heads:
-            ctx_detailed = context_exp.clone()
-            tgt_detailed = target_exp.clone()
-            ctx_detailed[:, :, half:, :, :] = 0  
-            tgt_detailed[:, :, half:, :, :] = 0  
-            
-            per_t_maps["detailed"][t_val] = run_inference_pass(
-                ctx_detailed, tgt_detailed, err_start_idx=0, err_end_idx=half
-            )
+            per_t_maps["detailed"][t_val] = err_spatial[:half, :, :]
 
-        # ---------------------------------------------------------
-        # PASS 2: SEMANTIC ONLY
-        # ---------------------------------------------------------
         if "semantic" in heads:
-            ctx_semantic = context_exp.clone()
-            tgt_semantic = target_exp.clone()
-            ctx_semantic[:, :, :half, :, :] = 0
-            tgt_semantic[:, :, :half, :, :] = 0
-            
-            per_t_maps["semantic"][t_val] = run_inference_pass(
-                ctx_semantic, tgt_semantic, err_start_idx=half, err_end_idx=n_channels
-            )
+            per_t_maps["semantic"][t_val] = err_spatial[half:, :, :]
 
-        # ---------------------------------------------------------
-        # PASS 3: COMBINED
-        # ---------------------------------------------------------
         if "combined" in heads:
-            per_t_maps["combined"][t_val] = run_inference_pass(
-                context_exp, target_exp, err_start_idx=0, err_end_idx=n_channels
-            )
+            per_t_maps["combined"][t_val] = err_spatial
 
     return per_t_maps
 
 
-# ---------- Welford running mean/variance ----------
 class MultiHeadWelfordAccumulator:
     def __init__(self, shape, t_grid, heads, device):
         self.t_grid = t_grid
         self.heads = heads
         self.n = {t: 0 for t in t_grid}
         
-        self.mean = {h: {t: torch.zeros(shape, device=device) for t in t_grid} for h in heads}
-        self.M2 = {h: {t: torch.zeros(shape, device=device) for t in t_grid} for h in heads}
+        self.mean = {h: {t: torch.zeros(shape[h], device=device) for t in t_grid} for h in heads}
+        self.M2 = {h: {t: torch.zeros(shape[h], device=device) for t in t_grid} for h in heads}
 
     def update(self, t_val, head_maps):
         self.n[t_val] += 1
@@ -163,28 +130,26 @@ class MultiHeadWelfordAccumulator:
 
 
 if __name__ == "__main__":
-    exp_dir = "logs_wm/orbis_288x512"
+    exp_dir = PROJECT_ROOT / "logs_wm" / "orbis_288x512"
     device = get_device()
     print(f"Using device: {device}")
 
-    cfg = OmegaConf.load(f"{exp_dir}/config.yaml")
+    cfg = OmegaConf.load(exp_dir / "config.yaml")
     model = instantiate_from_config(cfg.model)
-    state = torch.load(f"{exp_dir}/checkpoints/last.ckpt", map_location="cpu", weights_only=True)["state_dict"]
+    state = torch.load(exp_dir / "checkpoints" / "last.ckpt", map_location="cpu", weights_only=True)["state_dict"]
     model.load_state_dict(state, strict=True)
     model = model.to(device).eval()
 
     t_grid = [0.2, 0.4, 0.6, 0.8]
     N_NOISE_SAMPLES = 2
-    
-    # Configure your variants here. The calculation loop will dynamically adjust.
     HEADS = ["detailed", "semantic"]
 
-    with open("DoTA_prepared/manifest_subset1500.json") as f:
+    manifest_path = PROJECT_ROOT / "DoTA_prepared" / "manifest_subset1500.json"
+    with open(manifest_path) as f:
         manifest = json.load(f)
 
-    # Infer map shape from first sample
     first_clip = manifest[0]["clip_id"]
-    first_folder = str(Path("DoTA_prepared") / first_clip / "non-ood")
+    first_folder = str(PROJECT_ROOT / "DoTA_prepared" / first_clip / "non-ood")
     probe_maps = surprise_score(
         model,
         load_clip_as_window(get_sorted_frame_paths(first_folder)).unsqueeze(0).to(device),
@@ -194,15 +159,14 @@ if __name__ == "__main__":
         n_noise_samples=1,
     )
     
-    # Use the first requested head to grab the shape map dynamically
-    map_shape = probe_maps[HEADS[0]][t_grid[0]].shape
-    print(f"Per-token map shape: {map_shape}")
+    map_shapes = {h: probe_maps[h][t_grid[0]].shape for h in HEADS}
+    print(f"Per-head map shapes: {map_shapes}")
 
-    accumulator = MultiHeadWelfordAccumulator(map_shape, t_grid, HEADS, device)
+    accumulator = MultiHeadWelfordAccumulator(map_shapes, t_grid, HEADS, device)
 
     for i, clip in enumerate(tqdm(manifest, desc="Processing calib clips")):
         if clip.get("non_ood_split") == "calib":
-            clip_dir = Path("DoTA_prepared") / clip["clip_id"]
+            clip_dir = PROJECT_ROOT / "DoTA_prepared" / clip["clip_id"]
             folder = str(clip_dir / "non-ood")
             
             paths = get_sorted_frame_paths(folder)
@@ -218,12 +182,9 @@ if __name__ == "__main__":
             if device.type == "mps" and i % 50 == 0:
                 torch.mps.empty_cache()
 
-    # Finalize and write
     calib_stats = accumulator.finalize()
-    
-    # Generate dynamic filename based on chosen heads
     filename_suffix = "_".join(HEADS)
-    save_path = f"{RESULTS_DIR}/calib_stats_{filename_suffix}.pt"
+    save_path = RESULTS_DIR / f"calib_stats_{filename_suffix}.pt"
     
     torch.save(calib_stats, save_path)
     print(f"Saved stats to {save_path} (n={calib_stats[HEADS[0]][t_grid[0]]['n']})")
