@@ -1,10 +1,20 @@
+"""
+Plots for visualizing surprise scores across different heads and time steps.
+parameters:
+- minmax: if True, the scores are normalized to [0, 1] using min-max normalization. If False, the scores are normalized using z-score normalization.
+- z_threshold: the threshold for z-score normalization. Scores below this threshold are masked out in the overlay plots.
+- z_vmax: the maximum value for z-score normalization. Scores above this value are clipped in the overlay plots.
+- use_normalized: if True, the scores are normalized using z-score normalization. If False, the scores are not normalized.
+- plot_name_suffix: a string to append to the output plot file names for differentiation.
+"""
+
 import os
 import sys
 import glob
 import warnings
 from pathlib import Path
 
-# 1. Suppress torchvision C-extension warning on macOS
+# Suppress torchvision C-extension warning on macOS
 warnings.filterwarnings("ignore", category=UserWarning, module="torchvision.io.image")
 
 os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
@@ -22,53 +32,55 @@ import torch.nn.functional as F
 import matplotlib.pyplot as plt
 from omegaconf import OmegaConf
 
-# 2. Add project root to sys.path so modules can import each other reliably
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-# 3. Direct imports from scorer.py and util.py
 from util import instantiate_from_config
-from scoring.scorer_batch_norm import (
-    surprise_score,
-    get_sorted_frame_paths,
-    load_clip_as_window,
-    get_device,
-)
 
 RESULTS_DIR = "results"
 
+
+def get_device():
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        return torch.device("mps")
+    return torch.device("cpu")
+
+def get_sorted_frame_paths(folder):
+    paths = sorted(glob.glob(f"{folder}/*.jpg"))
+    assert len(paths) == 11, f"expected 11 frames in {folder}, found {len(paths)}"
+    return paths
+
+
+def load_clip_as_window(frame_paths, size=(512, 288)):
+    idxs = [0, 2, 4, 6, 8, 10]
+    frames = []
+    for i in idxs:
+        img = cv2.cvtColor(cv2.imread(frame_paths[i]), cv2.COLOR_BGR2RGB)
+        img = cv2.resize(img, size)
+        t = torch.from_numpy(img).permute(2, 0, 1).float() / 127.5 - 1.0
+        frames.append(t)
+    return torch.stack(frames)
+
 def normalize_map_with_calib(raw_map, t_val, calib_stats, head, eps=1e-8):
-    """
-    raw_map: [H, W] PyTorch tensor.
-    calib_stats: loaded nested dict from calib_stats_detailed_semantic.pt
-    head: string ("detailed" or "semantic" or "combined")
-    """
-    # Extract head-specific calibration stats
     mean = calib_stats["combined"][t_val]["mean"].to(raw_map.device)
     std = calib_stats["combined"][t_val]["std"].to(raw_map.device)
 
-    # Standardize (Z-Score)
-    # z_map = torch.clamp((raw_map - mean) / (std + eps), min=0.0)
-    half = mean.shape[0] // 2  # 16 channels
+    half = mean.shape[0] // 2 
 
-    # ---------------------------------------------------------
-    # PASS 1: DETAILED ONLY
-    # ---------------------------------------------------------
+    # detailed
     if head == "detailed":
         mean= mean[:half]
         std = std[:half] 
 
-    # ---------------------------------------------------------
-    # PASS 2: SEMANTIC ONLY
-    # ---------------------------------------------------------
+    # semantic
     if head == "semantic":
         mean = mean[half:]
         std = std[half:]
 
-    # ---------------------------------------------------------
-    # PASS 3: COMBINED
-    # ---------------------------------------------------------
+    # combined
     if head == "combined":
         mean = mean
         std = std
@@ -82,6 +94,63 @@ def load_target_frame(folder, frame_index=10, size=(512, 288)):
     img = cv2.cvtColor(cv2.imread(paths[frame_index]), cv2.COLOR_BGR2RGB)
     img = cv2.resize(img, size)
     return img.astype(np.float32) / 255.0
+
+@torch.no_grad()
+def surprise_score(model, images, frame_rate, t_grid, heads, n_noise_samples=2, use_ema=False):
+    net = model.ema_vit if use_ema else model.vit
+    net.eval()
+    
+    x = model.encode_frames(images)
+    context, target = x[:, :-1].clone(), x[:, -1:]
+    b = x.shape[0]
+    n_channels = target.shape[2]
+    half = n_channels // 2
+
+    context_exp = context.repeat_interleave(n_noise_samples, dim=0)
+    target_exp = target.repeat_interleave(n_noise_samples, dim=0)
+
+    per_t_maps = {h: {} for h in heads}
+    is_mps = x.device.type == "mps"
+
+    for t_val in t_grid:
+        t = torch.full((b * n_noise_samples,), t_val, device=x.device)
+        fr = frame_rate.repeat_interleave(n_noise_samples, dim=0) if frame_rate.numel() > 1 else frame_rate
+
+        def run_inference_pass(ctx, tgt):
+            tgt_t, noise = model.add_noise(tgt, t)
+            
+            if is_mps:
+                pred = net(tgt_t, ctx, t, frame_rate=fr)
+            else:
+                pred = net(tgt_t, ctx, t, frame_rate=fr)
+            
+            true_v = model.A(t) * tgt + model.B(t) * noise
+            err = (pred.float() - true_v.float()) ** 2
+            
+            err_avg = err.view(b, n_noise_samples, 1, n_channels, err.shape[-2], err.shape[-1]).mean(dim=1)
+        
+            return err_avg.squeeze(0).squeeze(0)
+
+        combined_scores = run_inference_pass(
+            context_exp, target_exp
+        )
+        
+        # detailed
+        if "detailed" in heads:
+            per_t_maps["detailed"][t_val] =  combined_scores[:half, :, :]  
+
+        # semantic
+        if "semantic" in heads:
+            per_t_maps["semantic"][t_val] =  combined_scores[half:, :, :]
+
+        # ---------------------------------------------------------
+        # PASS 3: COMBINED
+        # ---------------------------------------------------------
+        if "combined" in heads:
+            per_t_maps["combined"][t_val] = combined_scores
+
+    return per_t_maps
+
 
 def plot_and_overlay(
     model, 
@@ -105,14 +174,12 @@ def plot_and_overlay(
     window = load_clip_as_window(paths).unsqueeze(0).to(device)
     frame_rate = torch.full((1,), 5.0).to(device)
 
-    # 1. Compute raw error maps for requested heads
     per_t_maps = surprise_score(model, window, frame_rate, t_grid, heads=heads, n_noise_samples=n_noise_samples)
     target_frame = load_target_frame(folder_path, frame_index=10, size=(512, 288))
     
     output_dir = output_dir_override if output_dir_override else f"results/heatmaps_poster/{clip_id}/{plot_name_suffix}"
     os.makedirs(output_dir, exist_ok=True)
 
-    # 2. Setup 3-row figure (Row 0 = Detailed, Row 1 = Semantic, Row 2 = Combined)
     n_rows = len(heads)
     n_cols = len(t_grid) + 2
     fig, axes = plt.subplots(n_rows, n_cols, figsize=(3.5 * n_cols, 3.0 * n_rows))
@@ -128,14 +195,14 @@ def plot_and_overlay(
             raw_map = per_t_maps[head][t_val]
             if use_normalized:
                 z_map = normalize_map_with_calib(raw_map, t_val, calib_stats, head=head, eps=eps)
-                z_map = z_map.mean(dim=0)  # Average across channels
+                z_map = z_map.mean(dim=0)  
             else:
-                z_map = raw_map.mean(dim=0)  # Average across channels
+                z_map = raw_map.mean(dim=0) 
             z_maps_list.append(z_map)
 
             
             z_map_4d = z_map.unsqueeze(0).unsqueeze(0).float()
-            z_up = F.interpolate(z_map_4d, size=(288, 512), mode="bilinear", align_corners=False) # to look at later
+            z_up = F.interpolate(z_map_4d, size=(288, 512), mode="bilinear", align_corners=False)
             z_up_np_dict[t_val] = z_up.squeeze().cpu().numpy()
 
         z_map_avg = torch.stack(z_maps_list).mean(dim=0)
@@ -143,12 +210,10 @@ def plot_and_overlay(
         z_up_avg = F.interpolate(z_map_avg_4d, size=(288, 512), mode="bilinear", align_corners=False)
         z_up_avg_np = z_up_avg.squeeze().cpu().numpy()
 
-        # Col 0: Raw Frame
         axes[row_idx, 0].imshow(target_frame)
         axes[row_idx, 0].set_title(f"{head.capitalize()} — Frame")
         axes[row_idx, 0].axis("off")
 
-        # Col 1: Average Map Across t
         if use_minmax:
             avg_min, avg_max = z_up_avg_np.min(), z_up_avg_np.max()
             z_avg_proc = (z_up_avg_np - avg_min) / (avg_max - avg_min + eps)
@@ -163,7 +228,6 @@ def plot_and_overlay(
         axes[row_idx, 1].set_title("Avg Across t", fontweight="bold")
         axes[row_idx, 1].axis("off")
 
-        # Cols 2..N: Timesteps
         for i, t_val in enumerate(t_grid):
             z_up_np = z_up_np_dict[t_val]
             if use_minmax:
@@ -203,7 +267,6 @@ if __name__ == "__main__":
     t_grid = [0.2, 0.4, 0.6, 0.8]
     HEADS = ["detailed", "semantic", "combined"]
     
-    # Load model
     exp_dir = "logs_wm/orbis_288x512"
     cfg = OmegaConf.load(f"{exp_dir}/config.yaml")
     model = instantiate_from_config(cfg.model)
@@ -211,15 +274,14 @@ if __name__ == "__main__":
     model.load_state_dict(state, strict=True)
     model = model.to(device).eval()
 
-    # Load multi-head calibration statistics
     calib_stats_path = "results/calib_stats_combined3000.pt"
     if not os.path.exists(calib_stats_path):
         raise FileNotFoundError("Missing calibration stats file. Please run the calibration script first.")
 
     calib_stats = torch.load(calib_stats_path, weights_only=True)
 
+    # provide the clip ids to plot
     test_clip_ids = ["1u69z-wsDIc_004195", "5vKPYV5w6pw_005653"]
-
 
     for test_clip_id in test_clip_ids:
         print(f"\nProcessing clip: {test_clip_id}")
