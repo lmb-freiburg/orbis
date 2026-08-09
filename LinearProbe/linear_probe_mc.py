@@ -13,6 +13,17 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.append(str(PROJECT_ROOT))
 from LinearProbe.dota import get_dota_dataloaders
 from util import instantiate_from_config
+import random
+import numpy as np
+
+def set_seed(seed=43):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+        torch.backends.cudnn.deterministic = True
+set_seed(43)
 
 
 class LinearProbe(nn.Module):

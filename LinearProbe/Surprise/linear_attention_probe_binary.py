@@ -7,7 +7,7 @@ import torch.optim as optim
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 from sklearn.metrics import accuracy_score, precision_score, recall_score, roc_auc_score, confusion_matrix
-import wandb
+# import wandb  # Commented out for local single run
 
 try:
     from dota import DOTA_CLASS_NAMES
@@ -31,12 +31,25 @@ except ImportError:
 
 DOTA_NAME_TO_ID = {v: k for k, v in DOTA_CLASS_NAMES.items()}
 
+import random
+import numpy as np
+
+def set_seed(seed=43):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+        torch.backends.cudnn.deterministic = True
+set_seed(43)
+
 class CachedSurpriseDataset(Dataset):
-    def __init__(self, cache_path="./cached_features/cached_raw_surprise_scores.pt", split='train', map_type='combined'):
+    def __init__(self, cache_path="./cached_features/cached_normalized_surprise_scores.pt", split='train', map_type='combined'):
         if not os.path.exists(cache_path):
-            alt_path = os.path.join("..", cache_path)
-            if os.path.exists(alt_path):
-                cache_path = alt_path
+            for alt in ["../cached_features/cached_normalized_surprise_scores.pt", "./results/sample_scores.pt", "../results/sample_scores.pt"]:
+                if os.path.exists(alt):
+                    cache_path = alt
+                    break
 
         data = torch.load(cache_path, map_location='cpu')
         split_items = [d for d in data if d.get('split') == split]
@@ -54,7 +67,7 @@ class CachedSurpriseDataset(Dataset):
                 hm = torch.tensor(hm)
 
             # hm shape: [T=4, C, H=18, W=32]
-            # Take mean across time dimension T=4 (dim=0): [C, 18, 32]
+            # Mean across time dimension T=4 (dim=0): [C, 18, 32]
             mean_hm = hm.float().mean(dim=0)
             # Permute to [18, 32, C] -> Reshape to [576 spatial tokens, C channels]
             feat = mean_hm.permute(1, 2, 0).reshape(576, -1)
@@ -112,9 +125,14 @@ class AttentionProbe(nn.Module):
         return logits, attn_weights
 
 def train_linear_probe(map_type='combined'):
+    # W&B initialization commented out for local execution
+    # wandb.init(project=f"orbis-surprise-attention-probe-{map_type}")
+    # config = wandb.config
+
+    # Best Hyperparameters from rare-sweep-20 (Run ltmo4z3g):
     batch_size = 64
-    learning_rate = 8.921907952045913e-05
-    weight_decay = 0.018889857643545577
+    learning_rate = 0.00012928041310818878
+    weight_decay = 0.0718454709095032
     beta1 = 0.95
     beta2 = 0.99
     early_stopping_patience = 5
@@ -125,10 +143,8 @@ def train_linear_probe(map_type='combined'):
     print(f"=======================================================")
     print(f"Using device: {device}")
 
-    train_dataset = CachedSurpriseDataset("./cached_features/cached_raw_surprise_scores.pt", split='train', map_type=map_type)
-    val_dataset = CachedSurpriseDataset("./cached_features/cached_raw_surprise_scores.pt", split='val', map_type=map_type)
-
-    print(f'------- Train: {len(train_dataset)} | Val: {len(val_dataset)} ---------')
+    train_dataset = CachedSurpriseDataset("./cached_features/cached_normalized_surprise_scores.pt", split='train', map_type=map_type)
+    val_dataset = CachedSurpriseDataset("./cached_features/cached_normalized_surprise_scores.pt", split='val', map_type=map_type)
 
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
     val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
@@ -138,17 +154,11 @@ def train_linear_probe(map_type='combined'):
     model = AttentionProbe(input_dim=hidden_dim, num_classes=2, num_heads=num_heads).to(device)
 
     criterion = nn.CrossEntropyLoss()
-    optimizer = optim.AdamW(
-        model.parameters(),
-        lr=learning_rate,
-        weight_decay=weight_decay,
-        betas=(beta1, beta2)
-    )
+    optimizer = optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay, betas=(beta1, beta2))
 
     best_val_loss = float('inf')
     best_val_acc = 0.0
     best_val_auc = 0.0
-    patience = early_stopping_patience
     patience_counter = 0
     epochs = 50
 
@@ -205,23 +215,33 @@ def train_linear_probe(map_type='combined'):
         except ValueError:
             val_auc = float('nan')
 
-        print(f"Epoch {epoch+1}/{epochs} [{map_type}] | Train Loss: {avg_train_loss:.4f} | Val Loss: {avg_val_loss:.4f}")
-        print(f"--> Train Acc: {train_acc:.2f}% | Val Acc: {val_acc:.2f}% | AUC: {val_auc:.4f}")
+        print(f"Epoch {epoch+1}/{epochs} [{map_type}] | Train Loss: {avg_train_loss:.4f} | Val Loss: {avg_val_loss:.4f} | Val Acc: {val_acc:.2f}% | AUC: {val_auc:.4f}")
+
+        # W&B logging commented out
+        # if wandb.run is not None:
+        #     wandb.log({
+        #         "epoch": epoch + 1,
+        #         "train_loss": avg_train_loss,
+        #         "train_accuracy": train_acc,
+        #         "val_loss": avg_val_loss,
+        #         "val_accuracy": val_acc,
+        #         "val_auc": val_auc,
+        #         "head_map": map_type
+        #     })
 
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
             best_val_acc = val_acc
             best_val_auc = val_auc
             patience_counter = 0
-            checkpoint_dir = "./checkpoints/surprise"
-            os.makedirs(checkpoint_dir, exist_ok=True)
-            ckpt_path = os.path.join(checkpoint_dir, f"best_surprise_attention_probe_{map_type}.pt")
-            torch.save(model.state_dict(), ckpt_path)
-            print(f">>> Saved new best model to '{ckpt_path}'! <<<")
+            # Model state dict and attention weight saving disabled
+            # checkpoint_dir = "./checkpoints/surprise"
+            # os.makedirs(checkpoint_dir, exist_ok=True)
+            # ckpt_path = os.path.join(checkpoint_dir, f"best_surprise_attention_probe_{map_type}.pt")
+            # torch.save(model.state_dict(), ckpt_path)
         else:
             patience_counter += 1
-            print(f"Early Stopping Counter: {patience_counter} / {patience}")
-            if patience_counter >= patience:
+            if patience_counter >= early_stopping_patience:
                 print(f"Early stopping triggered for '{map_type}'. Halting training.")
                 break
 
@@ -230,10 +250,26 @@ def train_linear_probe(map_type='combined'):
     return {"map_type": map_type, "val_loss": best_val_loss, "val_acc": best_val_acc, "val_auc": best_val_auc}
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Train Attention Probe on raw surprise scores per head map.")
-    parser.add_argument("--map_type", type=str, choices=['detailed', 'semantic', 'combined', 'all'], default='all',
+    parser = argparse.ArgumentParser(description="Train Attention Probe on normalized surprise scores per head map.")
+    parser.add_argument("--map_type", type=str, choices=['detailed', 'semantic', 'combined', 'all'], default='combined',
                         help="Head map key to train on (detailed, semantic, combined, or all)")
     args = parser.parse_args()
+
+    # W&B Sweep config (commented out for local single run)
+    # sweep_config = {
+    #     'method': 'bayes',
+    #     'metric': {'name': 'val_loss', 'goal': 'minimize'},
+    #     'parameters': {
+    #         'learning_rate': {'distribution': 'log_uniform_values', 'min': 1e-6, 'max': 1e-2},
+    #         'weight_decay': {'distribution': 'uniform', 'min': 0.0, 'max': 0.1},
+    #         'batch_size': {'values': [16, 32, 64]},
+    #         'beta1': {'value': 0.95},
+    #         'beta2': {'value': 0.99},
+    #         'early_stopping_patience': {'value': 5}
+    #     }
+    # }
+    # sweep_id = wandb.sweep(sweep_config, project="orbis-surprise-attention-probe-combined")
+    # wandb.agent(sweep_id, function=train_linear_probe, count=20)
 
     head_maps = ['detailed', 'semantic', 'combined'] if args.map_type == 'all' else [args.map_type]
     results = []

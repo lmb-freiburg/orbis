@@ -5,6 +5,17 @@ import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 from sklearn.metrics import accuracy_score, precision_score, recall_score, roc_auc_score, confusion_matrix
 import wandb # Added Weights & Biases
+import random
+import numpy as np
+
+def set_seed(seed=43):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+        torch.backends.cudnn.deterministic = True
+set_seed(43)
 
 class CachedFeatureDataset(Dataset):
     def __init__(self, cache_path):

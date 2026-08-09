@@ -26,6 +26,18 @@ except ImportError:
             10: "unknown",
         }
 
+import random
+import numpy as np
+
+def set_seed(seed=43):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+        torch.backends.cudnn.deterministic = True
+set_seed(43)
+
 class CachedFeatureDataset(Dataset):
     def __init__(self, cache_path):
         data = torch.load(cache_path, map_location='cpu')

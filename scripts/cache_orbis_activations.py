@@ -18,7 +18,7 @@ if str(PROJECT_ROOT) not in sys.path:
 if torch.cuda.is_available():
     torch.backends.cudnn.benchmark = True
 
-from LinearProbe.dota import get_dota_dataloaders
+from dota import get_dota_dataloaders
 from util import instantiate_from_config
 
 
@@ -104,20 +104,35 @@ def cache_features(model, dataloader, device, save_dir, split_name, checkpoint_i
                 clip_ids = batch_data[2]
                 target_frame_ids = [None] * len(clip_ids)
 
-            if hasattr(model, "encode_frames") and hasattr(model, "vit"):
-                clips = clips.permute(0, 2, 1, 3, 4).contiguous()
-                latents = model.encode_frames(clips)
-                context = latents[:, :-1].contiguous() if latents.size(1) > 1 else None
-                target = latents[:, -1:].contiguous()
-                
-                t = torch.zeros(clips.shape[0], dtype=torch.float32, device=device)
-                frame_rate = torch.full((clips.shape[0],), 5.0, dtype=torch.float32, device=device)
-                _ = model.vit(target, context, t, frame_rate=frame_rate)
+            if device.type == "cuda":
+                with torch.amp.autocast("cuda", dtype=torch.float16):
+                    if hasattr(model, "encode_frames") and hasattr(model, "vit"):
+                        clips = clips.permute(0, 2, 1, 3, 4).contiguous()
+                        latents = model.encode_frames(clips)
+                        context = latents[:, :-1].contiguous() if latents.size(1) > 1 else None
+                        target = latents[:, -1:].contiguous()
+                        
+                        t = torch.zeros(clips.shape[0], dtype=torch.float32, device=device)
+                        frame_rate = torch.full((clips.shape[0],), 5.0, dtype=torch.float32, device=device)
+                        _ = model.vit(target, context, t, frame_rate=frame_rate)
+                    else:
+                        t = torch.zeros(clips.shape[0], dtype=torch.float32, device=device)
+                        _ = model(clips, t)
             else:
-                t = torch.zeros(clips.shape[0], dtype=torch.float32, device=device)
-                _ = model(clips, t)
+                if hasattr(model, "encode_frames") and hasattr(model, "vit"):
+                    clips = clips.permute(0, 2, 1, 3, 4).contiguous()
+                    latents = model.encode_frames(clips)
+                    context = latents[:, :-1].contiguous() if latents.size(1) > 1 else None
+                    target = latents[:, -1:].contiguous()
+                    
+                    t = torch.zeros(clips.shape[0], dtype=torch.float32, device=device)
+                    frame_rate = torch.full((clips.shape[0],), 5.0, dtype=torch.float32, device=device)
+                    _ = model.vit(target, context, t, frame_rate=frame_rate)
+                else:
+                    t = torch.zeros(clips.shape[0], dtype=torch.float32, device=device)
+                    _ = model(clips, t)
             
-            # 3. Retrieve and process intercepted features for ALL hooked blocks
+            # 3. Retrieve and process intercepted features for ALL hooked blocks (store in FP16)
             for name in target_blocks.keys():
                 features = activation[name]
 
@@ -125,7 +140,7 @@ def cache_features(model, dataloader, device, save_dir, split_name, checkpoint_i
                 if features.dim() == 4:
                     features = features[:, -1, :, :]
                 
-                all_features[name].append(features.cpu())
+                all_features[name].append(features.cpu().half())
 
             all_labels.append(labels.cpu())
             if mc_labels is not None:
@@ -225,7 +240,7 @@ def parse_args():
     parser.add_argument("--ckpt", type=str, default="checkpoints/last.ckpt")
     parser.add_argument("--seq_dir", type=str, default="../DoTA_sequences")
     parser.add_argument("--anno_dir", type=str, default="annotations/")
-    parser.add_argument("--batch_size", type=int, default=4)
+    parser.add_argument("--batch_size", type=int, default=8, help="Batch size optimized for NVIDIA T4 GPU")
     parser.add_argument("--num_workers", type=int, default=6, help="Optimal CPU worker threads for n1-standard-8 (8 vCPUs).")
     parser.add_argument("--save_dir", type=str, default="./results")
     parser.add_argument("--checkpoint_interval", type=int, default=100, help="Backup cache every N sequences")
