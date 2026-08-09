@@ -74,3 +74,22 @@ DiagnosticProbes/*.gif
 *.pt
 *wandb*
 
+DrivingGen/.gitattributes
+DrivingGen/README.md
+DrivingGen/ego_condition.json
+DrivingGen/open_domain.json
+callbacks/kl_callbacks.py
+data/multiframe_val.py
+environment.yml
+evaluate/rollout.py
+evaluate/rollout_dataset_carla.py
+evaluate/rollout_dataset_dota.py
+evaluate/rollout_steering.py
+logs_wm/orbis_288x512/carla_config.yaml
+logs_wm/orbis_288x512/config.yaml
+main.py
+models/first_stage/vqgan.py
+networks/DiT/dit.py
+networks/swin/swin_free_aspect_ratio.py
+networks/tokenizer/pretrained_models.py
+
