@@ -1,3 +1,5 @@
+import os
+import argparse
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -19,16 +21,25 @@ set_seed(43)
 
 class CachedFeatureDataset(Dataset):
     def __init__(self, cache_path):
-        data = torch.load(cache_path)
-        self.features = data['features']
+        data = torch.load(cache_path, map_location='cpu')
+        self.features = data['features'].half() if data['features'].dtype == torch.float32 else data['features']
         self.labels = data['labels'].long() 
-        print(f'Loaded {cache_path} | Shape - {self.features.shape}')
+        self.mc_labels = data['mc_labels'] if 'mc_labels' in data else None
+        self.source_mc_labels = data['source_mc_labels'] if 'source_mc_labels' in data else None
+        self.ego_labels = data['ego_labels'] if 'ego_labels' in data else None
+        self.video_ids = data['video_ids']
+        self.target_frame_ids = data['target_frame_ids'] if 'target_frame_ids' in data else [None] * len(self.video_ids)
+        print(f'Loaded {cache_path} | Shape - {self.features.shape} , {self.labels.shape}')
         
     def __len__(self):
         return len(self.features)
 
     def __getitem__(self, idx):
-        return self.features[idx], self.labels[idx]
+        mc = self.mc_labels[idx] if self.mc_labels is not None else -1
+        src_mc = self.source_mc_labels[idx] if self.source_mc_labels is not None else -1
+        ego = self.ego_labels[idx] if self.ego_labels is not None else -1
+        tf_id = self.target_frame_ids[idx] if idx < len(self.target_frame_ids) else None
+        return self.features[idx].float(), self.labels[idx], mc, src_mc, ego, self.video_ids[idx], tf_id
 
 class LinearProbe(nn.Module):
     def __init__(self, input_dim, num_classes=2):
@@ -39,16 +50,29 @@ class LinearProbe(nn.Module):
     def forward(self, x):
         return self.classifier(self.norm(x))
 
-def train_linear_probe():
+def train_linear_probe(use_wandb=False):
     # 1. Initialize W&B run (Config is populated by the Sweep agent)
-    wandb.init()
-    config = wandb.config
+    if use_wandb:
+        wandb.init()
+        config = wandb.config
+    else:
+        # Fallback config if running without sweep agent
+        config = type('Config', (), {
+            'batch_size': 64,
+            'learning_rate': 0.0006432805604895261,
+            'weight_decay': 0.06599430117405974,
+            'beta1': 0.95,
+            'beta2': 0.999,
+            'early_stopping_patience': 5
+        })()
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
     # 2. Load Cached Data
-    train_dataset = CachedFeatureDataset("./cached_features/train_block18.pt")
-    val_dataset = CachedFeatureDataset("./cached_features/val_block18.pt")
+    train_dataset = CachedFeatureDataset("./cached_features/train_block18_all_correct_unpooled_mc.pt")
+    val_dataset = CachedFeatureDataset("./cached_features/val_block18_all_correct_unpooled_mc.pt")
+
+    print(f'------- Train: {len(train_dataset)} | Val: {len(val_dataset)} ---------')
 
     train_loader = DataLoader(train_dataset, batch_size=config.batch_size, shuffle=True)
     val_loader = DataLoader(val_dataset, batch_size=config.batch_size, shuffle=False)
@@ -87,8 +111,10 @@ def train_linear_probe():
         correct = 0
         total = 0
         
-        for idx, (features, labels) in enumerate(train_loader):
-            features, labels = features.to(device), labels.to(device)
+        for idx, batch_data in enumerate(train_loader):
+            features = batch_data[0].to(device)
+            labels = batch_data[1].to(device)
+            video_ids = batch_data[-1]
             
             # Flattening the activation
             B, H, W = features.shape
@@ -120,8 +146,33 @@ def train_linear_probe():
         all_val_probs = []
 
         with torch.no_grad():
-            for features, labels in val_loader:
-                features, labels = features.to(device), labels.to(device)
+            for batch_data in val_loader:
+                features = batch_data[0].to(device)
+                labels = batch_data[1].to(device)
+                if len(batch_data) == 7:
+                    mc_labels = batch_data[2]
+                    source_mc_labels = batch_data[3]
+                    ego_labels = batch_data[4]
+                    video_ids = batch_data[5]
+                    target_frame_ids = batch_data[6]
+                elif len(batch_data) == 6:
+                    mc_labels = batch_data[2]
+                    source_mc_labels = batch_data[3]
+                    ego_labels = None
+                    video_ids = batch_data[4]
+                    target_frame_ids = batch_data[5]
+                elif len(batch_data) == 5:
+                    mc_labels = batch_data[2]
+                    source_mc_labels = None
+                    ego_labels = None
+                    video_ids = batch_data[3]
+                    target_frame_ids = batch_data[4]
+                else:
+                    mc_labels = None
+                    source_mc_labels = None
+                    ego_labels = None
+                    video_ids = batch_data[2]
+                    target_frame_ids = [None] * len(video_ids)
 
                 # Flattening the activation
                 B, H, W = features.shape
@@ -161,24 +212,25 @@ def train_linear_probe():
         print(f"\nEpoch {epoch+1}/{epochs} | Train Loss: {avg_train_loss:.4f} | Val Loss: {avg_val_loss:.4f}")
         print(f"--> Train Acc: {train_acc:.2f}% | Val Acc: {val_acc:.2f}% | AUC: {val_auc:.4f}")
         
-        wandb.log({
-            "epoch": epoch + 1,
-            "train_loss": avg_train_loss,
-            "train_accuracy": train_acc,
-            "val_loss": avg_val_loss,
-            "val_accuracy": val_acc,
-            "val_precision": val_precision,
-            "val_recall": val_recall,
-            "val_auc": val_auc
-        })
+        if use_wandb and wandb.run is not None:
+            wandb.log({
+                "epoch": epoch + 1,
+                "train_loss": avg_train_loss,
+                "train_accuracy": train_acc,
+                "val_loss": avg_val_loss,
+                "val_accuracy": val_acc,
+                "val_precision": val_precision,
+                "val_recall": val_recall,
+                "val_auc": val_auc
+            })
 
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
             patience_counter = 0
-            checkpoint_dir = "./checkpoints/binary"
-            os.makedirs(checkpoint_dir, exist_ok=True)
-            torch.save(model.state_dict(), os.path.join(checkpoint_dir, "best_binary_linear_probe.pt"))
-            print(f">>> Saved new best binary linear model to '{checkpoint_dir}'! <<<")
+            # checkpoint_dir = "./checkpoints/binary"
+            # os.makedirs(checkpoint_dir, exist_ok=True)
+            # torch.save(model.state_dict(), os.path.join(checkpoint_dir, "best_binary_linear_probe.pt"))
+            # print(f">>> Saved new best binary linear model to '{checkpoint_dir}'! <<<")
         else:
             patience_counter += 1
             print(f"Early Stopping Counter: {patience_counter} / {patience}")
@@ -187,65 +239,51 @@ def train_linear_probe():
                 break # Exit the epoch loop
 
 if __name__ == "__main__":
-    # Define the Hyperparameter Sweep Configuration
-    # sweep_config = {
-    #     'method': 'bayes', # Bayesian optimization (finds the best params faster than random)
-    #     'metric': {
-    #         'name': 'val_loss',
-    #         'goal': 'minimize'   
-    #     },
-    #     'parameters': {
-    #         'learning_rate': {
-    #             'distribution': 'log_uniform_values',
-    #             'min': 1e-6,
-    #             'max': 1e-3
-    #         },
-    #         'weight_decay': {
-    #             'distribution': 'uniform',
-    #             'min': 0.0,
-    #             'max': 0.1
-    #         },
-    #         'batch_size': {
-    #             'values': [16, 32, 64]
-    #         },
-    #         'beta1': {
-    #             'values': [0.9, 0.95]
-    #         },
-    #         'beta2': {
-    #             'values': [0.99, 0.999]
-    #         },
-    #         'early_stopping_patience': {
-    #             'value': 5
-    #         }
-    #     }
-    # }
-    sweep_config = {
-    'method': 'grid',  # Changed to grid since we are running a single fixed point
-    'metric': {
-        'name': 'val_loss',
-        'goal': 'minimize'   
-    },
-    'parameters': {
-        'learning_rate': {
-            'value': 0.0006432805604895261  # Exact best learning rate
-        },
-        'weight_decay': {
-            'value': 0.06599430117405974    # Exact best weight decay
-        },
-        'batch_size': {
-            'value': 64
-        },
-        'beta1': {
-            'value': 0.95
-        },
-        'beta2': {
-            'value': 0.999
-        },
-        'early_stopping_patience': {
-            'value': 5
+    parser = argparse.ArgumentParser(description="Run Linear Maxpool Probe")
+    parser.add_argument("--sweep", action="store_true", help="Enable W&B HPO hyperparameter sweep mode")
+    parser.add_argument("--sweep_count", type=int, default=10, help="Number of Bayesian hyperparameter sweep runs")
+    args = parser.parse_args()
+
+    if args.sweep:
+        sweep_config = {
+            'method': 'bayes',
+            'metric': {
+                'name': 'val_loss',
+                'goal': 'minimize'   
+            },
+            'parameters': {
+                'learning_rate': {
+                    'distribution': 'log_uniform_values',
+                    'min': 1e-6,
+                    'max': 1e-3
+                },
+                'weight_decay': {
+                    'distribution': 'uniform',
+                    'min': 0.0,
+                    'max': 0.1
+                },
+                'batch_size': {
+                    'values': [16, 32, 64]
+                },
+                'beta1': {
+                    'values': [0.9, 0.95]
+                },
+                'beta2': {
+                    'values': [0.99, 0.999]
+                },
+                'early_stopping_patience': {
+                    'value': 5
+                }
+            }
         }
-    }
-    }
+        
+        sweep_id = wandb.sweep(sweep_config, project="orbis-linear-maxpool-probe-binary-3000")
+        import functools
+        train_fn = functools.partial(train_linear_probe, use_wandb=True)
+        wandb.agent(sweep_id, function=train_fn, count=args.sweep_count)
+    else:
+        print("Running Single Local Train Pass (Best Hyperparameters)")
+        train_linear_probe(use_wandb=False)
     # # Best Hyper Param-Setting - smooth-sweep-20
     # batch_size:64
     # beta1:0.95
@@ -269,9 +307,3 @@ if __name__ == "__main__":
     #     "val_precision": 72.72727272727273,
     #     "train_accuracy": 72.5
     # }
-
-    # Initialize the sweep
-    sweep_id = wandb.sweep(sweep_config, project="orbis-linear-maxpool-probe")
-
-    # Run the sweep agent (this will run train_linear_probe 20 times with different parameters)
-    wandb.agent(sweep_id, function=train_linear_probe, count=20)

@@ -1,3 +1,4 @@
+import os
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -101,24 +102,31 @@ class AttentionProbe(nn.Module):
         return logits, attn_weights
 
 def train_linear_probe():
-    # 1. Temporarily comment out W&B initialization and use captured best hyperparameters
-    # wandb.init()
-    # config = wandb.config
+    # 1. Initialize W&B run (Config populated dynamically by the Sweep Agent)
+    wandb.init()
+    config = wandb.config
 
-    # Best hyperparameters setting from ancient-sweep-16 (Run 16):
-    batch_size = 64
-    learning_rate = 8.921907952045913e-05
-    weight_decay = 0.018889857643545577
-    beta1 = 0.95
-    beta2 = 0.99
-    early_stopping_patience = 5
+    # Best hyperparameters setting from ancient-sweep-16 (Run 16) - Commented out:
+    # batch_size = 64
+    # learning_rate = 8.921907952045913e-05
+    # weight_decay = 0.018889857643545577
+    # beta1 = 0.95
+    # beta2 = 0.99
+    # early_stopping_patience = 5
+
+    batch_size = config.batch_size
+    learning_rate = config.learning_rate
+    weight_decay = config.weight_decay
+    beta1 = config.beta1
+    beta2 = config.beta2
+    early_stopping_patience = config.early_stopping_patience
 
     device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
     print(f"Using device: {device}")
     
     # 2. Load Cached Data from Block 18
-    train_dataset = CachedFeatureDataset("./cached_features/train_block18_3600_correct_unpooled_mc.pt")
-    val_dataset = CachedFeatureDataset("./cached_features/val_block18_3600_correct_unpooled_mc.pt")
+    train_dataset = CachedFeatureDataset("./cached_features/train_block18_all_correct_unpooled_mc.pt")
+    val_dataset = CachedFeatureDataset("./cached_features/val_block18_all_correct_unpooled_mc.pt")
 
     print(f'------- Train: {len(train_dataset)} | Val: {len(val_dataset)} ---------')
     
@@ -266,32 +274,32 @@ def train_linear_probe():
         print(f"\nEpoch {epoch+1}/{epochs} | Train Loss: {avg_train_loss:.4f} | Val Loss: {avg_val_loss:.4f}")
         print(f"--> Train Acc: {train_acc:.2f}% | Val Acc: {val_acc:.2f}% | AUC: {val_auc:.4f}")
         
-        # wandb.log({
-        #     "epoch": epoch + 1,
-        #     "train_loss": avg_train_loss,
-        #     "train_accuracy": train_acc,
-        #     "val_loss": avg_val_loss,
-        #     "val_accuracy": val_acc,
-        #     "val_precision": val_precision,
-        #     "val_recall": val_recall,
-        #     "val_auc": val_auc
-        # })
+        wandb.log({
+            "epoch": epoch + 1,
+            "train_loss": avg_train_loss,
+            "train_accuracy": train_acc,
+            "val_loss": avg_val_loss,
+            "val_accuracy": val_acc,
+            "val_precision": val_precision,
+            "val_recall": val_recall,
+            "val_auc": val_auc
+        })
 
         # 8. Early Stopping & Saving Logic
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
             patience_counter = 0
-            # Save the model state
-            checkpoint_dir = "./checkpoints/binary"
-            os.makedirs(checkpoint_dir, exist_ok=True)
-            torch.save(model.state_dict(), os.path.join(checkpoint_dir, "best_binary_attention_probe.pt"))
+            # Save the model state (Commented out)
+            # checkpoint_dir = "./checkpoints/binary"
+            # os.makedirs(checkpoint_dir, exist_ok=True)
+            # torch.save(model.state_dict(), os.path.join(checkpoint_dir, "best_binary_attention_probe.pt"))
 
-            # Save the attention weights for the best epoch
-            checkpoint_data = {
-                "sequences": current_epoch_attention_weights,
-            }
-            torch.save(checkpoint_data, os.path.join(checkpoint_dir, "best_binary_val_attention_weights.pt"))
-            print(f">>> Saved new best binary model and attention weights to '{checkpoint_dir}'! <<<")
+            # Save the attention weights for the best epoch (Commented out)
+            # checkpoint_data = {
+            #     "sequences": current_epoch_attention_weights,
+            # }
+            # torch.save(checkpoint_data, os.path.join(checkpoint_dir, "best_binary_val_attention_weights.pt"))
+            # print(f">>> Saved new best binary model and attention weights to '{checkpoint_dir}'! <<<")
 
             # print("\n--- WORST MISTAKES SUMMARY ---")
             # print("Top False Positives (Normal predicted as Anomalous with high confidence):")
@@ -394,12 +402,12 @@ if __name__ == "__main__":
 
 
 
-    # Initialize the sweep (commented out for direct single run):
-    # sweep_id = wandb.sweep(sweep_config, project="orbis-attention-probe-weights-corrected-3600")
-    # wandb.agent(sweep_id, function=train_linear_probe, count=20)
+    # Initialize the sweep:
+    sweep_id = wandb.sweep(sweep_config, project="orbis-attention-probe-3000")
+    wandb.agent(sweep_id, function=train_linear_probe, count=20)
 
-    # Run single training & checkpoint saving using ancient-sweep-16 hyperparameters
-    train_linear_probe()
+    # Run single training & checkpoint saving using ancient-sweep-16 hyperparameters (Commented out)
+    # train_linear_probe()
 
     # # # Load your attention weights look-up map
     # attn_map = torch.load("best_val_attention_weights.pt")

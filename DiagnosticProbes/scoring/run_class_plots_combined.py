@@ -10,19 +10,28 @@ warnings.filterwarnings("ignore", category=UserWarning, module="torchvision.io.i
 import torch
 from omegaconf import OmegaConf
 
-# Import multi-head helper functions and models
-from scoring.plotter_batch_norm import plot_and_overlay, get_device, instantiate_from_config
+import sys
+SCORING_DIR = Path(__file__).resolve().parent
+DIAGNOSTIC_PROBES_DIR = SCORING_DIR.parent
+ORBIS_ROOT = DIAGNOSTIC_PROBES_DIR.parent
 
-# --- Config & Paths ---
-PROJECT_ROOT = Path(__file__).resolve().parent
-ORBIS_ROOT = PROJECT_ROOT.parent
+for p_add in [str(ORBIS_ROOT), str(DIAGNOSTIC_PROBES_DIR), str(SCORING_DIR)]:
+    if p_add not in sys.path:
+        sys.path.insert(0, p_add)
+
+try:
+    from scoring.plotter_batch_norm import plot_and_overlay, get_device, instantiate_from_config
+except ImportError:
+    from plotter_batch_norm import plot_and_overlay, get_device, instantiate_from_config
+
 MANIFEST_PATH = ORBIS_ROOT / "DoTA_class" / "manifest_dota_classes.json"
-OUTPUT_BASE_DIR = ORBIS_ROOT / "results" / "batch_norm2" / "classes_combined"
+OUTPUT_BASE_DIR = ORBIS_ROOT / "results" / "batch_norms2" / "combined"
 CALIB_STATS_PATH = ORBIS_ROOT / "results" / "calib_stats_combined.pt"
 EXP_DIR = ORBIS_ROOT / "logs_wm" / "orbis_288x512"
 
 T_GRID = [0.2, 0.4, 0.6, 0.8]
-HEADS = ["detailed", "semantic"]
+# Updated head list to process only the combined head/statistic
+HEADS = ["combined"]
 MAX_CLIPS_PER_CLASS = 10
 
 
@@ -33,14 +42,14 @@ def main():
     # Declare CALIB_STATS_PATH as global since we reassign it during fallback
     global CALIB_STATS_PATH
 
-    # 1. Read Class Manifest & Select 10 Clips Per Class
+    # 1. Read Class Manifest & Select Clips Per Class
     if not MANIFEST_PATH.exists():
         raise FileNotFoundError(f"Manifest not found at {MANIFEST_PATH}. Run sampling script first.")
 
     with open(MANIFEST_PATH, "r") as f:
         manifest = json.load(f)
 
-    # Group clips by class and pick top 10 per class
+    # Group clips by class and pick top clips per class
     clips_by_class = defaultdict(list)
     for sample in manifest:
         clips_by_class[sample["anomaly_name"]].append(sample)
@@ -60,10 +69,15 @@ def main():
     model.load_state_dict(state, strict=True)
     model = model.to(device).eval()
 
-    # 3. Load Calibration Stats
+    print(model.ae.encoder)
+    print("----")
+    print(model.ae.encoder2)
+
+    # 3. Load Combined Calibration Stats
     if not CALIB_STATS_PATH.exists():
         fallback_path = ORBIS_ROOT / "results" / "calib_stats.pt"
         if fallback_path.exists():
+            print(f"Combined stats not found at {CALIB_STATS_PATH}, falling back to {fallback_path}")
             CALIB_STATS_PATH = fallback_path
         else:
             raise FileNotFoundError(f"Stats file not found at {CALIB_STATS_PATH}")
@@ -91,8 +105,8 @@ def main():
 
             processed_count += 1
             sample_label = f"{class_name}_{split.upper()}"
-            
-            # Expected Z-Score file path
+
+            # Expected Z-Score file path for the combined plot
             expected_filename = f"overlay_{sample_label.lower()}_combined_zscore.png"
             expected_filepath = save_dir / expected_filename
 
@@ -122,7 +136,7 @@ def main():
                 print(f"  [Error] Failed to process {clip_id} ({split}, ZScore): {e}")
 
     print("\n" + "=" * 60)
-    print(f"Execution complete! All outputs saved to: {OUTPUT_BASE_DIR}")
+    print(f"Execution complete! All combined outputs saved to: {OUTPUT_BASE_DIR}")
     print("=" * 60 + "\n")
 
 

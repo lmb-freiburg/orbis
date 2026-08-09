@@ -36,7 +36,7 @@ RESULTS_DIR = "results"
 def normalize_map_with_calib(raw_map, t_val, calib_stats, head, eps=1e-8):
     """
     raw_map: [H, W] PyTorch tensor.
-    calib_stats: loaded nested dict from calib_stats_detailed_semantic.pt
+    calib_stats: loaded nested dict from calib_stats_combined.pt
     head: string ("detailed" or "semantic")
     """
     # Extract head-specific calibration stats
@@ -52,9 +52,37 @@ def normalize_map_with_calib(raw_map, t_val, calib_stats, head, eps=1e-8):
 
 def load_target_frame(folder, frame_index=10, size=(512, 288)):
     paths = sorted(glob.glob(f"{folder}/*.jpg"))
-    img = cv2.cvtColor(cv2.imread(paths[frame_index]), cv2.COLOR_BGR2RGB)
+    if not paths:
+        raise FileNotFoundError(f"No JPG frames found in folder: '{folder}'")
+    idx = min(frame_index, len(paths) - 1)
+    img = cv2.cvtColor(cv2.imread(paths[idx]), cv2.COLOR_BGR2RGB)
     img = cv2.resize(img, size)
     return img.astype(np.float32) / 255.0
+
+
+def get_sorted_frame_paths_safe(folder):
+    paths = sorted(glob.glob(f"{folder}/*.jpg"))
+    if not paths:
+        raise FileNotFoundError(f"No JPG images found in folder: '{folder}'")
+    return paths
+
+
+def load_clip_as_window_safe(frame_paths, size=(512, 288)):
+    n = len(frame_paths)
+    if n >= 11:
+        idxs = [0, 2, 4, 6, 8, 10]
+    elif n == 6:
+        idxs = [0, 1, 2, 3, 4, 5]
+    else:
+        idxs = np.linspace(0, n - 1, 6, dtype=int)
+
+    frames = []
+    for i in idxs:
+        img = cv2.cvtColor(cv2.imread(frame_paths[i]), cv2.COLOR_BGR2RGB)
+        img = cv2.resize(img, size)
+        t = torch.from_numpy(img).permute(2, 0, 1).float() / 127.5 - 1.0
+        frames.append(t)
+    return torch.stack(frames)
 
 
 def plot_and_overlay(
@@ -73,8 +101,8 @@ def plot_and_overlay(
     output_dir_override=None,
     eps=1e-8
 ):
-    paths = get_sorted_frame_paths(folder_path)
-    window = load_clip_as_window(paths).unsqueeze(0).to(device)
+    paths = get_sorted_frame_paths_safe(folder_path)
+    window = load_clip_as_window_safe(paths).unsqueeze(0).to(device)
     frame_rate = torch.full((1,), 5.0).to(device)
 
     # 1. Compute raw error maps for requested heads
@@ -155,8 +183,66 @@ def plot_and_overlay(
     fig.savefig(save_path, dpi=200, bbox_inches="tight")
     plt.close(fig)
 
+def find_clip_folders(clip_id):
+    """
+    Finds normal (good/non-ood) and anomaly (anomalous/ood) folder paths for clip_id.
+    First checks DoTA_training/DoTA_training.pt, then standard folder structures.
+    """
+    good_path = None
+    anom_path = None
+
+    dota_pt_path = "./DOTA_training/DoTA_training.pt"
+    if os.path.exists(dota_pt_path):
+        try:
+            dota_data = torch.load(dota_pt_path, map_location='cpu')
+            vids = dota_data.get('video_ids', [])
+            paths = dota_data.get('clip_paths', [])
+            labels = dota_data.get('labels', [])
+
+            for i, vid in enumerate(vids):
+                if vid == clip_id:
+                    lbl = labels[i].item() if isinstance(labels[i], torch.Tensor) else labels[i]
+                    frame_paths = paths[i]
+                    if len(frame_paths) > 0:
+                        folder = os.path.dirname(frame_paths[0])
+                        if lbl == 0 and not good_path:
+                            good_path = folder
+                        elif lbl == 1 and not anom_path:
+                            anom_path = folder
+        except Exception as e:
+            print(f"Warning reading DoTA_training.pt: {e}")
+
+    # Fallbacks if not found in pt or pt file not present
+    if not good_path:
+        for candidate in [
+            f"DOTA_training/data/train/{clip_id}_good",
+            f"DOTA_training/data/val/{clip_id}_good",
+            f"DoTA_pedestrian/{clip_id}/non-ood"
+        ]:
+            if os.path.exists(candidate):
+                good_path = candidate
+                break
+
+    if not anom_path:
+        for candidate in [
+            f"DOTA_training/data/train/{clip_id}_anomalous",
+            f"DOTA_training/data/val/{clip_id}_anomalous",
+            f"DoTA_pedestrian/{clip_id}/ood"
+        ]:
+            if os.path.exists(candidate):
+                anom_path = candidate
+                break
+
+    return good_path, anom_path
+
+
 if __name__ == "__main__":
-    device = get_device()
+    import argparse
+    parser = argparse.ArgumentParser(description="Run surprise score batch norm plotter for sequence.")
+    parser.add_argument("--clip_id", type=str, default="h55PiQMnlJY_003552", help="Clip ID to plot")
+    args = parser.parse_args()
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
     
     t_grid = [0.2, 0.4, 0.6, 0.8]
@@ -171,40 +257,57 @@ if __name__ == "__main__":
     model = model.to(device).eval()
 
     # Load multi-head calibration statistics
-    calib_stats_path = "results/calib_stats_detailed_semantic.pt"
-    if not os.path.exists(calib_stats_path):
-        calib_stats_path = f"{RESULTS_DIR}/calib_stats.pt"
-        if not os.path.exists(calib_stats_path):
-            raise FileNotFoundError("Missing calibration stats file. Please run the calibration script first.")
+    calib_stats_candidates = [
+        "./results_pt/calib_stats_detailed_semantic.pt",
+        "./cached_features/calib_stats_detailed_semantic.pt",
+        "./cached_features/calib_stats_combined.pt",
+        f"{RESULTS_DIR}/calib_stats.pt"
+    ]
+    calib_stats_path = None
+    for cand in calib_stats_candidates:
+        if os.path.exists(cand):
+            calib_stats_path = cand
+            break
 
+    if not calib_stats_path:
+        raise FileNotFoundError("Missing calibration stats file. Please run calibration script first.")
+
+    print(f"Loaded calibration stats from '{calib_stats_path}'")
     calib_stats = torch.load(calib_stats_path, weights_only=True)
 
-    test_clip_id = "D_pyFV4nKd4_003993"
+    test_clip_id = args.clip_id
+    good_folder, anom_folder = find_clip_folders(test_clip_id)
 
-    # Plot Normal Sample for both Detailed & Semantic
-    plot_and_overlay(
-        model=model,
-        clip_id=test_clip_id,
-        folder_path=f"DoTA_pedestrian/{test_clip_id}/non-ood",
-        sample_label="Normal",
-        t_grid=t_grid,
-        calib_stats=calib_stats,
-        device=device,
-        heads=HEADS,
-        use_minmax=False,
-        z_vmax=3.0,
-    )
+    if good_folder and os.path.exists(good_folder):
+        print(f"Plotting Normal sample for clip '{test_clip_id}' from '{good_folder}'...")
+        plot_and_overlay(
+            model=model,
+            clip_id=test_clip_id,
+            folder_path=good_folder,
+            sample_label="Normal",
+            t_grid=t_grid,
+            calib_stats=calib_stats,
+            device=device,
+            heads=HEADS,
+            use_minmax=False,
+            z_vmax=3.0,
+        )
+    else:
+        print(f"Warning: Normal folder for '{test_clip_id}' not found.")
 
-    # Plot Anomaly Sample for both Detailed & Semantic
-    plot_and_overlay(
-        model=model,
-        clip_id=test_clip_id,
-        folder_path=f"DoTA_pedestrian/{test_clip_id}/ood",
-        sample_label="Anomaly",
-        t_grid=t_grid,
-        calib_stats=calib_stats,
-        device=device,
-        heads=HEADS,
-        use_minmax=False,
-        z_vmax=3.0,
-    )
+    if anom_folder and os.path.exists(anom_folder):
+        print(f"Plotting Anomaly sample for clip '{test_clip_id}' from '{anom_folder}'...")
+        plot_and_overlay(
+            model=model,
+            clip_id=test_clip_id,
+            folder_path=anom_folder,
+            sample_label="Anomaly",
+            t_grid=t_grid,
+            calib_stats=calib_stats,
+            device=device,
+            heads=HEADS,
+            use_minmax=False,
+            z_vmax=3.0,
+        )
+    else:
+        print(f"Warning: Anomaly folder for '{test_clip_id}' not found.")

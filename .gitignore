@@ -63,19 +63,14 @@ DoTA_training/
 Thumbs.db
 
 
-results/
-probing_encoder/
-notes.txt
-*.jpg
-*.pyc
-*.pth
-*.DS_Store
-*.ckpt
-*.gif
+DiagnosticProbes/checkpoints/
+DiagnosticProbes/results/
+DiagnosticProbes/*.pt
+DiagnosticProbes/*.png
+DiagnosticProbes/*.gif
 *.png
 *.txt
 *.npy
 *.pt
-*DONTUSE*
 *wandb*
-*manifest*
+

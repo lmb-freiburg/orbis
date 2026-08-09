@@ -1,4 +1,5 @@
 import os
+import sys
 import argparse
 import numpy as np
 import matplotlib.pyplot as plt
@@ -9,36 +10,100 @@ import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score
 
+# Set directory structure
+SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
+DIAGNOSTIC_PROBES_DIR = os.path.dirname(SCRIPTS_DIR)
+PROJECT_ROOT = os.path.dirname(DIAGNOSTIC_PROBES_DIR)
+
+for path_to_add in [PROJECT_ROOT, DIAGNOSTIC_PROBES_DIR]:
+    if path_to_add not in sys.path:
+        sys.path.insert(0, path_to_add)
+
+def resolve_path(p):
+    if p is None:
+        return None
+    if os.path.isabs(p):
+        return p
+    p1 = os.path.join(PROJECT_ROOT, p)
+    if os.path.exists(p1):
+        return p1
+    p2 = os.path.join(DIAGNOSTIC_PROBES_DIR, p)
+    if os.path.exists(p2):
+        return p2
+    return p1
+
 try:
     from dota import DOTA_CLASS_NAMES
 except ImportError:
     try:
-        from LinearProbe.dota import DOTA_CLASS_NAMES
+        from DiagnosticProbes.dota import DOTA_CLASS_NAMES
     except ImportError:
-        DOTA_CLASS_NAMES = {
-            0: "normal",
-            1: "start_stop_or_stationary",
-            2: "moving_ahead_or_waiting",
-            3: "lateral",
-            4: "oncoming",
-            5: "turning",
-            6: "pedestrian",
-            7: "obstacle",
-            8: "leave_to_right",
-            9: "leave_to_left",
-            10: "unknown",
-        }
+        try:
+            from LinearProbe.dota import DOTA_CLASS_NAMES
+        except ImportError:
+            DOTA_CLASS_NAMES = {
+                0: "normal",
+                1: "start_stop_or_stationary",
+                2: "moving_ahead_or_waiting",
+                3: "lateral",
+                4: "oncoming",
+                5: "turning",
+                6: "pedestrian",
+                7: "obstacle",
+                8: "leave_to_right",
+                10: "unknown",
+            }
+DOTA_NAME_TO_ID = {v: k for k, v in DOTA_CLASS_NAMES.items()}
 
 
 class CachedFeatureDataset(Dataset):
-    def __init__(self, cache_path):
+    def __init__(self, cache_path, split='val', map_type='combined', t_step='3'):
+        cache_path = resolve_path(cache_path)
         data = torch.load(cache_path, map_location='cpu')
-        self.features = data['features'].half() if data['features'].dtype == torch.float32 else data['features']
-        self.labels = data['labels'].long()
-        self.mc_labels = data['mc_labels'] if 'mc_labels' in data else None
-        self.source_mc_labels = data['source_mc_labels'] if 'source_mc_labels' in data else None
-        self.video_ids = data['video_ids']
-        self.target_frame_ids = data['target_frame_ids'] if 'target_frame_ids' in data else [None] * len(self.video_ids)
+        if isinstance(data, list):
+            split_items = [d for d in data if d.get('split') == split]
+            feats_list, labels_list, mc_labels_list, src_mc_labels_list, video_ids_list, target_frame_ids_list = [], [], [], [], [], []
+            half = 16
+            for item in split_items:
+                hm = item['head_maps']['combined']
+                if not isinstance(hm, torch.Tensor):
+                    hm = torch.tensor(hm)
+                if map_type == 'semantic':
+                    hm = hm[:, half:, :, :]
+                elif map_type == 'detailed':
+                    hm = hm[:, :half, :, :]
+
+                if t_step == 'mean' or t_step is None:
+                    selected_hm = hm.float().mean(dim=0)
+                else:
+                    t_idx = int(t_step)
+                    selected_hm = hm[t_idx].float()
+
+                feat = selected_hm.permute(1, 2, 0).reshape(576, -1)
+                feats_list.append(feat)
+                labels_list.append(item.get('label', 0))
+                acc_name = item.get('accident_name', 'normal')
+                src_acc_name = item.get('source_accident_name', acc_name)
+                mc_id = DOTA_NAME_TO_ID.get(acc_name, 0 if acc_name == 'normal' else -1)
+                src_mc_id = DOTA_NAME_TO_ID.get(src_acc_name, mc_id)
+                mc_labels_list.append(mc_id)
+                src_mc_labels_list.append(src_mc_id)
+                video_ids_list.append(item.get('clip_id', ''))
+                target_frame_ids_list.append(item.get('target_frame_id', None))
+
+            self.features = torch.stack(feats_list)
+            self.labels = torch.tensor(labels_list, dtype=torch.long)
+            self.mc_labels = torch.tensor(mc_labels_list, dtype=torch.long)
+            self.source_mc_labels = torch.tensor(src_mc_labels_list, dtype=torch.long)
+            self.video_ids = video_ids_list
+            self.target_frame_ids = target_frame_ids_list
+        else:
+            self.features = data['features'].half() if data['features'].dtype == torch.float32 else data['features']
+            self.labels = data['labels'].long()
+            self.mc_labels = data['mc_labels'] if 'mc_labels' in data else None
+            self.source_mc_labels = data['source_mc_labels'] if 'source_mc_labels' in data else None
+            self.video_ids = data['video_ids']
+            self.target_frame_ids = data['target_frame_ids'] if 'target_frame_ids' in data else [None] * len(self.video_ids)
         print(f"Loaded cached features from '{cache_path}' | Features shape: {self.features.shape}, Labels shape: {self.labels.shape}")
 
     def __len__(self):
@@ -71,50 +136,146 @@ class AttentionProbe(nn.Module):
         return logits, attn_weights
 
 
-def load_probe_model(model_path, weights_path, input_dim, num_classes, device):
-    """
-    Instantiates AttentionProbe and loads weights from model_path (state_dict)
-    or weights_path if state_dict is present there.
-    """
-    model = AttentionProbe(input_dim=input_dim, num_classes=num_classes, num_heads=8).to(device)
+class MultiTaskAttentionProbe(nn.Module):
+    def __init__(self, input_dim, num_classes=10, num_heads=8, dropout=0.2):
+        super().__init__()
+        self.query = nn.Parameter(torch.randn(1, 1, input_dim))
+        self.attn = nn.MultiheadAttention(embed_dim=input_dim, num_heads=num_heads, batch_first=True)
+        self.norm1 = nn.LayerNorm(input_dim)
+        self.norm2 = nn.LayerNorm(input_dim)
+        self.dropout = nn.Dropout(p=dropout)
+        self.binary_classifier = nn.Linear(input_dim, 2)
+        self.mc_classifier = nn.Linear(input_dim, num_classes)
 
-    # Candidate paths resolution
+    def forward(self, x):
+        B = x.size(0)
+        q = self.query.expand(B, -1, -1)
+        x = self.norm1(x)
+        attn_out, attn_weights = self.attn(query=q, key=x, value=x, average_attn_weights=False)
+        pooled_features = attn_out.squeeze(1)
+        pooled_features = self.norm2(pooled_features)
+        pooled_features = self.dropout(pooled_features)
+        binary_logits = self.binary_classifier(pooled_features)
+        mc_logits = self.mc_classifier(pooled_features)
+        return binary_logits, mc_logits, attn_weights
+
+
+def load_probe_model(model_path, weights_path, input_dim, num_classes, device, is_mc=False, num_heads=None):
+    """
+    Instantiates AttentionProbe or MultiTaskAttentionProbe and loads state_dict.
+    """
+    if num_heads is None:
+        num_heads = 4 if (model_path and "surprise" in model_path) else 8
+
+    model_path = resolve_path(model_path)
+    weights_path = resolve_path(weights_path)
+
     candidate_model_paths = [
         model_path,
-        os.path.join("./checkpoints/multiclass", os.path.basename(model_path)),
-        os.path.join("./checkpoints/binary", os.path.basename(model_path)),
-        os.path.join("./checkpoints/surprise", os.path.basename(model_path)),
-        os.path.join("./checkpoints/encoder", os.path.basename(model_path)),
+        os.path.join(PROJECT_ROOT, "checkpoints", "multiclass", "best_multiclass_attention_probe_multitask.pt"),
+        os.path.join(PROJECT_ROOT, "checkpoints", "multiclass", "best_multiclass_attention_probe_single.pt"),
+        os.path.join(PROJECT_ROOT, "checkpoints", "multiclass", "best_multiclass_attention_probe.pt"),
+        os.path.join(PROJECT_ROOT, "checkpoints", "binary", "best_binary_attention_probe.pt"),
     ]
 
-    loaded = False
     for path in candidate_model_paths:
-        if os.path.exists(path):
+        if path and os.path.exists(path):
             try:
                 state_dict = torch.load(path, map_location=device)
-                if isinstance(state_dict, dict) and "query" in state_dict:
-                    model.load_state_dict(state_dict)
-                    print(f"Successfully loaded trained AttentionProbe weights from '{path}'")
-                    loaded = True
-                    break
+                if isinstance(state_dict, dict):
+                    if "mc_classifier.weight" in state_dict or "binary_classifier.weight" in state_dict:
+                        model = MultiTaskAttentionProbe(input_dim=input_dim, num_classes=num_classes, num_heads=num_heads).to(device)
+                        model.load_state_dict(state_dict)
+                        print(f"Successfully loaded MultiTaskAttentionProbe (num_heads={num_heads}) weights from '{path}'")
+                        model.eval()
+                        return model, True
+                    elif "classifier.weight" in state_dict or "query" in state_dict:
+                        model = AttentionProbe(input_dim=input_dim, num_classes=num_classes, num_heads=num_heads).to(device)
+                        model.load_state_dict(state_dict)
+                        print(f"Successfully loaded AttentionProbe (num_heads={num_heads}) weights from '{path}'")
+                        model.eval()
+                        return model, False
             except Exception as e:
                 print(f"Warning: Could not load weights from '{path}': {e}")
 
-    if not loaded and os.path.exists(weights_path):
-        try:
-            ckpt = torch.load(weights_path, map_location=device)
-            if isinstance(ckpt, dict) and "state_dict" in ckpt:
-                model.load_state_dict(ckpt["state_dict"])
-                print(f"Successfully loaded trained weights from '{weights_path}'")
-                loaded = True
-        except Exception as e:
-            print(f"Warning: Could not load state_dict from '{weights_path}': {e}")
-
-    if not loaded:
-        print("Warning: No trained probe weights found! Running with newly initialized weights.")
-
+    print(f"Warning: No trained probe weights found! Running with newly initialized AttentionProbe weights (num_heads={num_heads}).")
+    model = AttentionProbe(input_dim=input_dim, num_classes=num_classes, num_heads=num_heads).to(device)
     model.eval()
-    return model
+    return model, False
+
+
+DOTA_CLASS_CODES = {
+    0: "NO",
+    1: "SS",
+    2: "MW",
+    3: "LA",
+    4: "OC",
+    5: "TU",
+    6: "PD",
+    7: "OB",
+    8: "LR",
+    9: "LL",
+}
+
+
+def plot_10x10_confusion_matrix(all_labels, all_preds, output_dir="./confusion_matrices_mc"):
+    """
+    Generates a 10x10 color-coded confusion matrix heatmap for all 10 DoTA classes.
+    Axes: Y-axis = True Label (Full name + code in brackets), X-axis = Predicted Label (2-letter code).
+    """
+    output_dir = resolve_path(output_dir)
+    os.makedirs(output_dir, exist_ok=True)
+    from sklearn.metrics import confusion_matrix
+    
+    formatted_class_names = [
+        "normal",
+        "start_stop_or_\nstationary",
+        "moving_ahead_\nor_waiting",
+        "lateral",
+        "oncoming",
+        "turning",
+        "pedestrian",
+        "obstacle",
+        "leave_to_right",
+        "leave_to_left"
+    ]
+    y_class_names = [f"{formatted_class_names[i]} ({DOTA_CLASS_CODES.get(i, 'XX')})" for i in range(10)]
+    x_class_names = [DOTA_CLASS_CODES.get(i, 'XX') for i in range(10)]
+    cm_10x10 = confusion_matrix(all_labels, all_preds, labels=list(range(10)))
+    
+    row_sums = cm_10x10.sum(axis=1, keepdims=True)
+    cm_norm = np.divide(cm_10x10.astype('float'), row_sums, out=np.zeros_like(cm_10x10, dtype=float), where=row_sums!=0)
+
+    fig, ax = plt.subplots(figsize=(16, 12))
+
+    sns.heatmap(
+        cm_norm,
+        annot=True,
+        fmt=".2f",
+        cmap="viridis",
+        vmin=0.0,
+        vmax=1.0,
+        cbar=False,
+        ax=ax,
+        linewidths=1,
+        linecolor="white",
+        xticklabels=x_class_names,
+        yticklabels=y_class_names,
+        annot_kws={"weight": "bold", "size": 13}
+    )
+
+    ax.set_xlabel("Predicted Label", fontsize=16, fontweight='bold', labelpad=12)
+    ax.set_ylabel("True Label", fontsize=16, fontweight='bold', labelpad=12)
+    ax.set_title("10x10 Multiclass Confusion Matrix Heatmap (True Label vs Predicted Label)", fontsize=18, fontweight='bold', pad=15)
+    plt.xticks(rotation=0, ha='center', fontsize=14, fontweight='bold')
+    plt.yticks(rotation=0, fontsize=14, fontweight='bold')
+    plt.tight_layout()
+
+    save_path = os.path.join(output_dir, "cm_10x10_multiclass_heatmap.png")
+    plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    plt.close(fig)
+    print(f"Saved 10x10 Multiclass Confusion Matrix Heatmap plot to '{save_path}'")
+    return save_path
 
 
 def save_confusion_matrix_plots(class_grouped, overall_stats, output_dir="./confusion_matrices_binary", is_mc=False):
@@ -122,6 +283,7 @@ def save_confusion_matrix_plots(class_grouped, overall_stats, output_dir="./conf
     Generates high-resolution color-coded confusion matrix plots for each source_class_label
     as well as the overall validation variant, and a combined 2x5 multi-panel summary grid image.
     """
+    output_dir = resolve_path(output_dir)
     os.makedirs(output_dir, exist_ok=True)
     all_classes = sorted(class_grouped.keys())
 
@@ -227,12 +389,19 @@ def generate_stats(
     cache_path="./cached_features/val_block18_3600_correct_unpooled_mc.pt",
     model_path="best_attention_probe.pt",
     weights_path="best_val_attention_weights.pt",
-    output_path="stats_report_binary.md",
-    plot_dir="./confusion_matrices_binary",
-    heatmap_dir="./attention_heatmaps_binary",
+    output_path="DiagnosticProbes/reports/stats_report_binary.md",
+    plot_dir="DiagnosticProbes/confusionMatrices/binary",
+    heatmap_dir="DiagnosticProbes/heatmaps/binary",
     batch_size=32,
     is_mc=False
 ):
+    cache_path = resolve_path(cache_path)
+    model_path = resolve_path(model_path)
+    weights_path = resolve_path(weights_path)
+    output_path = resolve_path(output_path)
+    plot_dir = resolve_path(plot_dir)
+    heatmap_dir = resolve_path(heatmap_dir)
+
     device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
     print(f"Using device: {device} | Mode: {'Multiclass (MC)' if is_mc else 'Binary'}")
 
@@ -245,7 +414,7 @@ def generate_stats(
 
     input_dim = dataset.features.shape[-1]
     num_classes = 10 if is_mc else 2
-    model = load_probe_model(model_path, weights_path, input_dim, num_classes, device)
+    model, is_multitask = load_probe_model(model_path, weights_path, input_dim, num_classes, device, is_mc=is_mc)
 
     all_labels = []
     all_preds = []
@@ -263,7 +432,12 @@ def generate_stats(
             source_mc_labels = batch[3]
             vids = batch[4]
 
-            logits, _ = model(features)
+            if is_multitask:
+                bin_logits, mc_logits, _ = model(features)
+                logits = mc_logits if is_mc else bin_logits
+            else:
+                logits, _ = model(features)
+
             probs = F.softmax(logits, dim=1)
             _, preds = logits.max(1)
 
@@ -307,11 +481,11 @@ def generate_stats(
         overall_fn = 0
         overall_tp = 0
         overall_acc = accuracy_score(all_labels, all_preds) * 100
-        overall_prec = precision_score(all_labels, all_preds, zero_division=0, average='weighted') * 100
-        overall_rec = recall_score(all_labels, all_preds, zero_division=0, average='weighted') * 100
-        overall_f1 = f1_score(all_labels, all_preds, zero_division=0, average='weighted') * 100
+        overall_prec = precision_score(all_labels, all_preds, zero_division=0, average='macro') * 100
+        overall_rec = recall_score(all_labels, all_preds, zero_division=0, average='macro') * 100
+        overall_f1 = f1_score(all_labels, all_preds, zero_division=0, average='macro') * 100
         try:
-            overall_auc = roc_auc_score(all_labels, all_probs, multi_class='ovr', average='weighted')
+            overall_auc = roc_auc_score(all_labels, all_probs, multi_class='ovr', average='macro')
             overall_auc_str = f"{overall_auc:.4f}"
         except Exception:
             overall_auc_str = "N/A"
@@ -348,13 +522,20 @@ def generate_stats(
     # Generate Color-Coded Confusion Matrix Plots (Grid + Individual PNGs)
     grid_plot_path = save_confusion_matrix_plots(class_grouped, overall_stats, output_dir=plot_dir, is_mc=is_mc)
 
+    if is_mc:
+        cm_10x10_path = plot_10x10_confusion_matrix(all_labels, all_preds, output_dir=plot_dir)
+
     # Generate Markdown Report
     report_lines = []
     report_lines.append(f"# {'Multiclass (MC)' if is_mc else 'Binary'} Attention Probe - Per Source Class Performance Report\n")
     report_lines.append(f"**Cached Features**: `{cache_path}`  ")
     report_lines.append(f"**Total Samples**: `{total_samples}`  \n")
 
-    report_lines.append("## 1. Summary Table Per Source Class (Accident Category)\n")
+    if is_mc:
+        report_lines.append("## 1. 10x10 Multiclass Confusion Matrix Heatmap\n")
+        report_lines.append(f"![10x10 Multiclass Confusion Matrix Heatmap]({plot_dir}/cm_10x10_multiclass_heatmap.png)\n\n---\n")
+
+    report_lines.append("## 2. Summary Table Per Source Class (Accident Category)\n")
     header_table = "| Class ID | Source Class Name | Total | Target (1/MC) | Normal/Other | Correct | Error | Accuracy (%) | Precision (%) | Recall (%) | F1-Score (%) | AUC |"
     divider_table = "|---|---|---|---|---|---|---|---|---|---|---|---|"
     report_lines.append(header_table)
@@ -374,6 +555,13 @@ def generate_stats(
         correct_cnt = sum(1 for y, p in zip(t_labels, p_labels) if y == p)
         error_cnt = n_total - correct_cnt
 
+        if is_mc:
+            target_cnt = sum(1 for y in t_labels if y == src_id)
+            normal_cnt = n_total - target_cnt
+        else:
+            target_cnt = sum(1 for y in t_labels if y == 1)
+            normal_cnt = sum(1 for y in t_labels if y == 0)
+
         acc = correct_cnt / n_total * 100 if n_total > 0 else 0.0
         prec = precision_score(t_labels, p_labels, zero_division=0, average='macro' if is_mc else 'binary') * 100
         rec = recall_score(t_labels, p_labels, zero_division=0, average='macro' if is_mc else 'binary') * 100
@@ -388,11 +576,22 @@ def generate_stats(
         except Exception:
             auc_str = "N/A"
 
-        row = f"| {src_id:<8} | {c_name:<25} | {n_total:<5} | {correct_cnt:<13} | {error_cnt:<12} | {correct_cnt:<7} | {error_cnt:<5} | {acc:<12.2f} | {prec:<13.2f} | {rec:<10.2f} | {f1:<12.2f} | {auc_str:<5} |"
+        row = f"| {src_id:<8} | {c_name:<25} | {n_total:<5} | {target_cnt:<13} | {normal_cnt:<12} | {correct_cnt:<7} | {error_cnt:<5} | {acc:<12.2f} | {prec:<13.2f} | {rec:<10.2f} | {f1:<12.2f} | {auc_str:<5} |"
         report_lines.append(row)
         print(row)
 
-    overall_row = f"| **ALL**   | **OVERALL VALIDATION**    | {total_samples:<5} | {overall_tn:<13} | {overall_fp:<12} | {overall_tn:<7} | {overall_fp:<5} | {overall_acc:<12.2f} | {overall_prec:<13.2f} | {overall_rec:<10.2f} | {overall_f1:<12.2f} | {overall_auc_str:<5} |"
+    if is_mc:
+        overall_target = sum(1 for y in all_labels if y > 0)
+        overall_normal = sum(1 for y in all_labels if y == 0)
+        overall_correct = overall_tn
+        overall_error = overall_fp
+    else:
+        overall_target = overall_fn + overall_tp
+        overall_normal = overall_tn + overall_fp
+        overall_correct = overall_tn + overall_tp
+        overall_error = overall_fn + overall_fp
+
+    overall_row = f"| **ALL**   | **OVERALL VALIDATION**    | {total_samples:<5} | {overall_target:<13} | {overall_normal:<12} | {overall_correct:<7} | {overall_error:<5} | {overall_acc:<12.2f} | {overall_prec:<13.2f} | {overall_rec:<10.2f} | {overall_f1:<12.2f} | {overall_auc_str:<5} |"
     report_lines.append(divider_table)
     report_lines.append(overall_row)
     print(divider_table)
@@ -427,6 +626,10 @@ def generate_stats(
     report_lines.append(f"**Total Validation Samples**: `{total_samples}` | **Overall Accuracy**: `{overall_acc:.2f}%` | **Overall AUC**: `{overall_auc_str}`  \n")
     report_lines.append(f"![Overall Confusion Matrix]({plot_dir}/{overall_img_name})\n")
 
+    out_dir = os.path.dirname(output_path)
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
+
     with open(output_path, "w") as f:
         f.write("\n".join(report_lines) + "\n")
 
@@ -436,13 +639,19 @@ def generate_stats(
     try:
         from heatmaps import generate_attention_heatmaps_binary
     except ImportError:
-        from LinearProbe.heatmaps import generate_attention_heatmaps_binary
+        try:
+            from DiagnosticProbes.heatmaps import generate_attention_heatmaps_binary
+        except ImportError:
+            from LinearProbe.heatmaps import generate_attention_heatmaps_binary
 
-    generate_attention_heatmaps_binary(
-        weights_path=weights_path,
-        sequence_dir="../DoTA_sequences",
-        output_dir=heatmap_dir
-    )
+    try:
+        generate_attention_heatmaps_binary(
+            weights_path=weights_path,
+            sequence_dir=os.path.join(PROJECT_ROOT, "..", "DoTA_sequences"),
+            output_dir=heatmap_dir
+        )
+    except Exception as e:
+        print(f"Notice: Heatmap generation skipped or failed: {e}")
 
 
 if __name__ == "__main__":
@@ -460,19 +669,19 @@ if __name__ == "__main__":
 
     # Set defaults based on is_mc flag
     if args.is_mc:
-        cache_path = args.cache_path or "./cached_features/val_block18_3600_correct_unpooled_mc.pt"
-        model_path = args.model_path or "./checkpoints/multiclass/best_multiclass_attention_probe.pt"
-        weights_path = args.weights_path or "./checkpoints/multiclass/best_multiclass_val_attention_weights.pt"
-        output_path = args.output_path or "stats_report_mc.md"
-        plot_dir = args.plot_dir or "./confusion_matrices_mc"
-        heatmap_dir = args.heatmap_dir or "./attention_heatmaps_mc"
+        cache_path = args.cache_path or "./cached_features/val_block18_all_correct_unpooled_mc.pt"
+        model_path = args.model_path or "./checkpoints/multiclass/best_multiclass_attention_probe_multitask.pt"
+        weights_path = args.weights_path or "./checkpoints/multiclass/best_multiclass_val_attention_weights_multitask.pt"
+        output_path = args.output_path or "DiagnosticProbes/reports/stats_report_mc.md"
+        plot_dir = args.plot_dir or "DiagnosticProbes/confusionMatrices/mc"
+        heatmap_dir = args.heatmap_dir or "DiagnosticProbes/heatmaps/mc"
     else:
-        cache_path = args.cache_path or "./cached_features/val_block18_3600_correct_unpooled_mc.pt"
+        cache_path = args.cache_path or "./cached_features/val_block18_all_correct_unpooled_mc.pt"
         model_path = args.model_path or "./checkpoints/binary/best_binary_attention_probe.pt"
         weights_path = args.weights_path or "./checkpoints/binary/best_binary_val_attention_weights.pt"
-        output_path = args.output_path or "stats_report_binary.md"
-        plot_dir = args.plot_dir or "./confusion_matrices_binary"
-        heatmap_dir = args.heatmap_dir or "./attention_heatmaps_binary"
+        output_path = args.output_path or "DiagnosticProbes/reports/stats_report_binary.md"
+        plot_dir = args.plot_dir or "DiagnosticProbes/confusionMatrices/binary"
+        heatmap_dir = args.heatmap_dir or "DiagnosticProbes/heatmaps/binary"
 
     generate_stats(
         cache_path=cache_path,

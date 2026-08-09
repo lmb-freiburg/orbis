@@ -13,9 +13,29 @@ from PIL import Image
 import sys
 from pathlib import Path
 from omegaconf import OmegaConf
-sys.path.append(str(Path(__file__).resolve().parents[1])) # Uncomment if needed
+
+PROBE_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.dirname(PROBE_DIR)
+
+for path_to_add in [PROJECT_ROOT, PROBE_DIR]:
+    if path_to_add not in sys.path:
+        sys.path.insert(0, path_to_add)
+
+def resolve_path(p):
+    if p is None:
+        return None
+    if os.path.isabs(p):
+        return p
+    p1 = os.path.join(PROJECT_ROOT, p)
+    if os.path.exists(p1):
+        return p1
+    p2 = os.path.join(PROBE_DIR, p)
+    if os.path.exists(p2):
+        return p2
+    return p1
+
 from util import instantiate_from_config
-from linear_attention_probe_binary import AttentionProbe # Assuming this is the name of your probe file
+from linear_attention_probe_binary import AttentionProbe
 
 try:
     from dota import DOTA_CLASS_NAMES
@@ -49,7 +69,7 @@ def process_attention_map(attn_1d, img_bgr, W, H):
     heatmap_bgr = cv2.applyColorMap(np.uint8(255 * attn_resized), cv2.COLORMAP_JET)
     
     # Overlay
-    overlay_bgr = cv2.addWeighted(img_bgr, 0.7, heatmap_bgr, 0.3, 0)
+    overlay_bgr = cv2.addWeighted(img_bgr, 0.5, heatmap_bgr, 0.5, 0)
     
     # Convert BGR to RGB for matplotlib
     return cv2.cvtColor(heatmap_bgr, cv2.COLOR_BGR2RGB), cv2.cvtColor(overlay_bgr, cv2.COLOR_BGR2RGB)
@@ -396,16 +416,16 @@ def sample_and_generate_relative_heatmaps(
 def generate_heatmaps_from_saved_weights(
     weights_path="best_val_attention_weights.pt",
     sequence_dir="../DoTA_sequences",
-    output_dir="./attention_heatmaps_saved",
+    output_dir="DiagnosticProbes/heatmaps/saved",
     num_worst_fp=5,
     num_worst_fn=5,
     only_worst_mistakes=True
 ):
-    """
-    Generates multi-head attention heatmap plots directly from saved attention weights (e.g., best_val_attention_weights.pt).
-    Displays ALL 8 separated attention heads + Mean attention overlay for each of the worst predicted cases (False Positives & False Negatives).
-    """
-    if not os.path.exists(weights_path):
+    weights_path = resolve_path(weights_path)
+    sequence_dir = resolve_path(sequence_dir)
+    output_dir = resolve_path(output_dir)
+
+    if not weights_path or not os.path.exists(weights_path):
         print(f"Weights file not found: {weights_path}")
         return
 
@@ -551,14 +571,13 @@ def generate_heatmaps_from_saved_weights(
 def generate_attention_heatmaps_binary(
     weights_path="best_val_attention_weights.pt",
     sequence_dir="../DoTA_sequences",
-    output_dir="./attention_heatmaps_binary"
+    output_dir="DiagnosticProbes/heatmaps/binary"
 ):
-    """
-    Generates mean and per-head attention heatmaps overlaid onto target frames.
-    Organizes heatmaps into:
-        output_dir / <source_class_label> / <TP|TN|FP|FN> / <video_id>_frame_<frame_stem>_heatmap.jpg
-    """
-    if not os.path.exists(weights_path):
+    weights_path = resolve_path(weights_path)
+    sequence_dir = resolve_path(sequence_dir)
+    output_dir = resolve_path(output_dir)
+
+    if not weights_path or not os.path.exists(weights_path):
         print(f"Weights file not found: {weights_path}")
         return
 
@@ -567,6 +586,11 @@ def generate_attention_heatmaps_binary(
         sequences = ckpt["sequences"]
     else:
         sequences = ckpt
+
+    import shutil
+    if os.path.exists(output_dir):
+        print(f"Cleaning out stale heatmaps from previous runs in '{output_dir}'...")
+        shutil.rmtree(output_dir)
 
     print(f"\n==================================================")
     print(f"Generating binary attention heatmaps in: '{output_dir}'")
@@ -688,6 +712,7 @@ def generate_attention_heatmaps_binary(
         frame_stem = os.path.splitext(target_frame_name)[0]
         save_filename = f"{category}_{video_id}_frame_{frame_stem}_heatmap.jpg"
         save_path = os.path.join(target_dir, save_filename)
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
         plt.savefig(save_path, bbox_inches='tight', dpi=150)
         plt.close(fig)
 
@@ -705,7 +730,7 @@ if __name__ == "__main__":
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
 
     generate_attention_heatmaps_binary(
-        weights_path="best_val_attention_weights.pt",
+        weights_path="checkpoints/binary/best_binary_val_attention_weights.pt",
         sequence_dir="../DoTA_sequences",
-        output_dir="./attention_heatmaps_binary"
+        output_dir="DiagnosticProbes/heatmaps/binary"
     )

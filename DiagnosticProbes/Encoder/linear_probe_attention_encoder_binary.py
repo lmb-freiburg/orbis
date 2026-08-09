@@ -35,18 +35,18 @@ class CachedFeatureDataset(Dataset):
             raise FileNotFoundError(f"Target embedding cache not found at: {cache_path}")
             
         data = torch.load(cache_path, map_location="cpu")
-        features = data['features']  # Input shape: [Batch, 32, 18, 32]
+        features = data['features']  # Input shape: [Batch, Channels, H, W]
         self.labels = data['labels'].long() 
-        self.ids = data['ids']
+        self.ids = data.get('ids', data.get('video_ids', []))
         
         # --- Spatial-Temporal Restructuring ---
-        # 1. Permute the [-3] channel dimension to the trailing position
-        # [B, 32, 18, 32] -> [B, 18, 32, 32]
+        # 1. Permute the channel dimension to the trailing position
+        # [B, C, H, W] -> [B, H, W, C]
         features = features.permute(0, 2, 3, 1)
         
         # 2. Flatten spatial dimensions to generate the sequence length
-        # [B, 18, 32, 32] -> [B, 576, 32]
-        self.features = features.reshape(features.size(0), 576, 32)
+        # [B, H, W, C] -> [B, H*W, C]
+        self.features = features.reshape(features.size(0), -1, features.size(-1))
         
         if self.labels.dim() > 1:
             self.labels = self.labels.squeeze()
@@ -57,7 +57,7 @@ class CachedFeatureDataset(Dataset):
         return len(self.features)
 
     def __getitem__(self, idx):
-        return self.features[idx], self.labels[idx], self.ids[idx]
+        return self.features[idx].float(), self.labels[idx], self.ids[idx]
 
 
 class AttentionProbe(nn.Module):
@@ -99,39 +99,55 @@ class AttentionProbe(nn.Module):
         return logits
 
 
-def train_linear_probe():
-    # 1. Initialize W&B run (Config populated dynamically by the Sweep Agent)
-    wandb.init()
-    config = wandb.config
+def train_linear_probe(use_wandb=False):
+    # Hardcoded Hyperparameters for Local Run:
+    batch_size = 16
+    learning_rate = 0.00007114681159456426
+    weight_decay = 0.012770392467248684
+    beta1 = 0.95
+    beta2 = 0.999
+    early_stopping_patience = 5
+    cache_dir = "./cached_features"
+
+    if use_wandb:
+        wandb.init()
+        config = wandb.config
+        batch_size = getattr(config, 'batch_size', batch_size)
+        learning_rate = getattr(config, 'learning_rate', learning_rate)
+        weight_decay = getattr(config, 'weight_decay', weight_decay)
+        beta1 = getattr(config, 'beta1', beta1)
+        beta2 = getattr(config, 'beta2', beta2)
+        early_stopping_patience = getattr(config, 'early_stopping_patience', early_stopping_patience)
+        cache_dir = getattr(config, 'cache_dir', cache_dir)
     
     device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
     print(f"Using device: {device}")
     
     # 2. Load the restructured datasets from the caching directory
-    cache_dir = getattr(config, "cache_dir", "./cached_features")
-    train_dataset = CachedFeatureDataset(os.path.join(cache_dir, "train_unpooled_embeddings.pt"))
-    val_dataset = CachedFeatureDataset(os.path.join(cache_dir, "val_unpooled_embeddings.pt"))
+    train_dataset = CachedFeatureDataset(os.path.join(cache_dir, "train_all_unpooled_embeddings.pt"))
+    val_dataset = CachedFeatureDataset(os.path.join(cache_dir, "val_all_unpooled_embeddings.pt"))
 
     print(f'------- Train: {len(train_dataset)} | Val: {len(val_dataset)} ---------')
     
-    train_loader = DataLoader(train_dataset, batch_size=config.batch_size, shuffle=True, drop_last=True)
-    val_loader = DataLoader(val_dataset, batch_size=config.batch_size, shuffle=False)
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, drop_last=True)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
     
-    # 3. Initialize Attention Probe with embed_dim=32
-    model = AttentionProbe(input_dim=32, num_heads=8).to(device)
+    # 3. Initialize Attention Probe with dynamic embed_dim
+    hidden_dim = train_dataset.features.shape[2]
+    model = AttentionProbe(input_dim=hidden_dim, num_heads=8).to(device)
     
     criterion = nn.CrossEntropyLoss()
     
     optimizer = optim.AdamW(
         model.parameters(), 
-        lr=config.learning_rate, 
-        weight_decay=config.weight_decay,
-        betas=(config.beta1, config.beta2)
+        lr=learning_rate, 
+        weight_decay=weight_decay,
+        betas=(beta1, beta2)
     )
     
     # Early Stopping Setup
     best_val_loss = float('inf')
-    patience = config.early_stopping_patience
+    patience = early_stopping_patience
     patience_counter = 0
     epochs = 50 
     
@@ -199,25 +215,27 @@ def train_linear_probe():
         print(f"\nEpoch {epoch+1}/{epochs} | Train Loss: {avg_train_loss:.4f} | Val Loss: {avg_val_loss:.4f}")
         print(f"--> Train Acc: {train_acc:.2f}% | Val Acc: {val_acc:.2f}% | AUC: {val_auc:.4f}")
         
-        wandb.log({
-            "epoch": epoch + 1,
-            "train_loss": avg_train_loss,
-            "train_accuracy": train_acc,
-            "val_loss": avg_val_loss,
-            "val_accuracy": val_acc,
-            "val_precision": val_precision,
-            "val_recall": val_recall,
-            "val_auc": val_auc
-        })
+        if use_wandb and wandb.run is not None:
+            wandb.log({
+                "epoch": epoch + 1,
+                "train_loss": avg_train_loss,
+                "train_accuracy": train_acc,
+                "val_loss": avg_val_loss,
+                "val_accuracy": val_acc,
+                "val_precision": val_precision,
+                "val_recall": val_recall,
+                "val_auc": val_auc
+            })
 
         # 8. Early Stopping Check
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
             patience_counter = 0
-            checkpoint_dir = "./checkpoints/encoder"
-            os.makedirs(checkpoint_dir, exist_ok=True)
-            torch.save(model.state_dict(), os.path.join(checkpoint_dir, "best_encoder_attention_probe_binary.pt"))
-            print(f">>> Saved new best encoder attention probe model to '{checkpoint_dir}'! <<<")
+            # if not use_wandb:
+            #     checkpoint_dir = "./checkpoints/encoder"
+            #     os.makedirs(checkpoint_dir, exist_ok=True)
+            #     torch.save(model.state_dict(), os.path.join(checkpoint_dir, "best_encoder_attention_probe_binary.pt"))
+            #     print(f">>> Saved new best encoder attention probe model to '{checkpoint_dir}'! <<<")
         else:
             patience_counter += 1
             print(f"Early Stopping Counter: {patience_counter} / {patience}")
@@ -227,68 +245,80 @@ def train_linear_probe():
 
 
 if __name__ == "__main__":
-    # Define the Hyperparameter Sweep Configuration matching encoder parameters
-    sweep_config = {
-        'method': 'bayes', # Bayesian optimization 
-        'metric': {
-            'name': 'val_loss',
-            'goal': 'minimize'   
-        },
-        'parameters': {
-            'learning_rate': {
-                'distribution': 'log_uniform_values',
-                'min': 1e-6,
-                'max': 1e-3
+    parser = argparse.ArgumentParser(description="Run Attention Probe on Encoder Embeddings.")
+    parser.add_argument("--sweep", action="store_true", help="Enable W&B HPO hyperparameter sweep mode")
+    parser.add_argument("--sweep_count", type=int, default=10, help="Number of Bayesian hyperparameter sweep runs")
+    args = parser.parse_args()
+
+    if args.sweep:
+        sweep_config = {
+            'method': 'bayes', # Bayesian optimization 
+            'metric': {
+                'name': 'val_loss',
+                'goal': 'minimize'   
             },
-            'weight_decay': {
-                'distribution': 'uniform',
-                'min': 0.0,
-                'max': 0.1
-            },
-            'batch_size': {
-                'values': [16, 32, 64]
-            },
-            'beta1': {
-                'values': [0.9, 0.95]
-            },
-            'beta2': {
-                'values': [0.99, 0.999]
-            },
-            'early_stopping_patience': {
-                'value': 5
-            },
-            'cache_dir': {
-                'value': './cached_features'
+            'parameters': {
+                'learning_rate': {
+                    'distribution': 'log_uniform_values',
+                    'min': 1e-6,
+                    'max': 1e-3
+                },
+                'weight_decay': {
+                    'distribution': 'uniform',
+                    'min': 0.0,
+                    'max': 0.1
+                },
+                'batch_size': {
+                    'values': [16, 32, 64]
+                },
+                'beta1': {
+                    'values': [0.9, 0.95]
+                },
+                'beta2': {
+                    'values': [0.99, 0.999]
+                },
+                'early_stopping_patience': {
+                    'value': 5
+                },
+                'cache_dir': {
+                    'value': './cached_features'
+                }
             }
         }
-    }
-    # # Best Hyper Param-Setting - misunderstood-sweep-20
-    #     batch_size: 16
-    #     beta1: 0.95
-    #     beta2:0.999
-    #     early_stopping_patience:5
-    #     learning_rate:0.00007114681159456426
-    #     weight_decay:0.012770392467248684
-    # # Best Summary metrics for above Hyperparameters setting
-    # {
-    #     "_step": 48,
-    #     "epoch": 49,
-    #     "_wandb.runtime": 23,
-    #     "val_auc": 0.6660081491542166,
-    #     "_runtime": 23,
-    #     "val_loss": 0.6123684744040171,
-    #     "_timestamp": 1784542445.670143,
-    #     "train_loss": 0.6110577013757493,
-    #     "val_recall": 53.84615384615385,
-    #     "val_accuracy": 66.66666666666666,
-    #     "val_precision": 73.13432835820896,
-    #     "train_accuracy": 65.13888888888889
-    # }
+        # # Best Hyper Param-Setting - misunderstood-sweep-20
+        #     batch_size: 16
+        #     beta1: 0.95
+        #     beta2:0.999
+        #     early_stopping_patience:5
+        #     learning_rate:0.00007114681159456426
+        #     weight_decay:0.012770392467248684
+        # # Best Summary metrics for above Hyperparameters setting
+        # {
+        #     "_step": 48,
+        #     "epoch": 49,
+        #     "_wandb.runtime": 23,
+        #     "val_auc": 0.6660081491542166,
+        #     "_runtime": 23,
+        #     "val_loss": 0.6123684744040171,
+        #     "_timestamp": 1784542445.670143,
+        #     "train_loss": 0.6110577013757493,
+        #     "val_recall": 53.84615384615385,
+        #     "val_accuracy": 66.66666666666666,
+        #     "val_precision": 73.13432835820896,
+        #     "train_accuracy": 65.13888888888889
+        # }
 
 
 
     # Initialize W&B Sweep
-    sweep_id = wandb.sweep(sweep_config, project="orbis-encoder-attention-probe")
+        sweep_id = wandb.sweep(sweep_config, project="orbis-encoder-attention-probe-3000")
 
-    # Launch sweep agent
-    wandb.agent(sweep_id, function=train_linear_probe, count=20)
+        # Launch sweep agent
+        import functools
+        train_fn = functools.partial(train_linear_probe, use_wandb=True)
+        wandb.agent(sweep_id, function=train_fn, count=args.sweep_count)
+    else:
+        print(f"\n=======================================================")
+        print(f" Running Local Single Run (with best hyperparams)")
+        print(f"=======================================================")
+        train_linear_probe(use_wandb=False)

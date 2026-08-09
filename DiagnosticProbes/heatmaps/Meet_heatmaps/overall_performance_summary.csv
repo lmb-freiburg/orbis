@@ -1,0 +1,5 @@
+Index,Model Variant & W&B Project,Best Run ID,Feature Type / Setting,Val Binary AUC,Val Binary Acc (%),Val MC Macro AUC,Val MC Macro Acc (%),Val Loss
+1,orbis-attention-probe-mc-multitask,grateful-sweep-2,"V-JEPA Multi-Task (CB Loss beta=0.99, W_bin=1.83)",0.8422,79.63,0.8052,60.50,2.4176
+2,orbis-attention-probe-3000,rosy-sweep-19,"V-JEPA Binary (Standard Block 18 features)",0.8547,78.00,N/A,N/A,0.4748
+3,orbis-surprise-attention-probe-combined_t,sweet-sweep-2,"Surprise Map (Combined, t=3 time slice)",0.7339,67.00,N/A,N/A,0.6052
+4,orbis-surprise-attention-probe-combined,rare-sweep-20,"Surprise Map (Combined, t=mean low norm)",0.7189,67.33,N/A,N/A,0.6080
