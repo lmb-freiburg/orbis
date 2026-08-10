@@ -23,27 +23,6 @@ conda-env/
 *.bin
 *.safetensors
 *.onnx
-checkpoints/
-saved_models/
-lightning_logs/
-tensorboard_logs/
-wandb/
-outputs/
-logs/
-logs_tk/
-logs_wm/
-
-# datasets
-DoTA_prepared/
-DoTA_oncoming/
-annotations/
-results_pt/
-results/
-DoTA_pedestrian/
-DoTA_class/
-DoTA_class*/
-DoTA_prepared*/
-DoTA_training/
 
 # Temporary / generated files
 *.tmp
@@ -54,6 +33,7 @@ DoTA_training/
 *.swp
 *.swo
 .DS_Store
+*.gif
 
 # IDE / editor files
 .vscode/
@@ -63,8 +43,16 @@ DoTA_training/
 Thumbs.db
 
 
+#DoTASpecific
+DOTA*
+
+#DiagnosticProbes
 DiagnosticProbes/checkpoints/
+DiagnosticProbes/cached_features/
+DiagnosticProbes/comparisonPlots/
+DiagnosticProbes/confusionMatrices*
 DiagnosticProbes/results/
+DiagnosticProbes/
 DiagnosticProbes/*.pt
 DiagnosticProbes/*.png
 DiagnosticProbes/*.gif
@@ -74,22 +62,5 @@ DiagnosticProbes/*.gif
 *.pt
 *wandb*
 
-DrivingGen/.gitattributes
-DrivingGen/README.md
-DrivingGen/ego_condition.json
-DrivingGen/open_domain.json
-callbacks/kl_callbacks.py
-data/multiframe_val.py
-environment.yml
-evaluate/rollout.py
-evaluate/rollout_dataset_carla.py
-evaluate/rollout_dataset_dota.py
-evaluate/rollout_steering.py
-logs_wm/orbis_288x512/carla_config.yaml
-logs_wm/orbis_288x512/config.yaml
-main.py
-models/first_stage/vqgan.py
-networks/DiT/dit.py
-networks/swin/swin_free_aspect_ratio.py
-networks/tokenizer/pretrained_models.py
+
 
