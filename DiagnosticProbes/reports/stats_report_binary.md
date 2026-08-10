@@ -1,6 +1,6 @@
 # Binary Attention Probe - Per Source Class Performance Report
 
-**Cached Features**: `/Users/betterbrambola/Desktop/Desktop - Prafful’s MacBook Pro/UFRAssns/DLLabProject/orbis/DiagnosticProbes/./cached_features/val_block18_all_correct_unpooled_mc.pt`  
+**Cached Features**: `/Users/betterbrambola/Desktop/Desktop - Prafful’s MacBook Pro/UFRAssns/DLLabProject/orbis/DiagnosticProbes/cached_features/val_block18_all_correct_unpooled_mc.pt`  
 **Total Samples**: `600`  
 
 ## 2. Summary Table Per Source Class (Accident Category)

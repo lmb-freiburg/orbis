@@ -9,37 +9,27 @@ import matplotlib.gridspec as gridspec
 from PIL import Image
 from torchvision import transforms
 from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+DIAGNOSTIC_PROBES_DIR = PROJECT_ROOT / "DiagnosticProbes"
+
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 from omegaconf import OmegaConf
 from util import instantiate_from_config
-SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
-DIAGNOSTIC_PROBES_DIR = os.path.dirname(SCRIPTS_DIR)
-PROJECT_ROOT = os.path.dirname(DIAGNOSTIC_PROBES_DIR)
-
-for path_to_add in [PROJECT_ROOT, DIAGNOSTIC_PROBES_DIR, SCRIPTS_DIR]:
-    if path_to_add not in sys.path:
-        sys.path.insert(0, path_to_add)
+from DiagnosticProbes.scripts.dota import DOTA_CLASS_NAMES
+from DiagnosticProbes.Activations.linear_attention_probe_binary import AttentionProbe
 
 def resolve_path(p):
     if p is None: return None
-    if os.path.isabs(p): return p
-    p1 = os.path.join(PROJECT_ROOT, p)
-    if os.path.exists(p1): return p1
-    p2 = os.path.join(DIAGNOSTIC_PROBES_DIR, p)
-    if os.path.exists(p2): return p2
-    return p1
-
-try:
-    from dota import DOTA_CLASS_NAMES
-except ImportError:
-    from DiagnosticProbes.scripts.dota import DOTA_CLASS_NAMES
-
-try:
-    from linear_attention_probe_binary import AttentionProbe
-except ImportError:
-    try:
-        from DiagnosticProbes.Activations.linear_attention_probe_binary import AttentionProbe
-    except ImportError:
-        from DiagnosticProbes.linear_attention_probe_binary import AttentionProbe
+    p_path = Path(p)
+    if p_path.is_absolute(): return str(p_path)
+    p1 = PROJECT_ROOT / p
+    if p1.exists(): return str(p1)
+    p2 = DIAGNOSTIC_PROBES_DIR / p
+    if p2.exists(): return str(p2)
+    return str(p1)
 
 def process_attention_map(attn_1d, img_bgr, W, H):
     """Helper function to normalize, resize, and overlay a single attention tensor."""

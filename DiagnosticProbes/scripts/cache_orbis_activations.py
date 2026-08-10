@@ -10,16 +10,18 @@ import torch
 from omegaconf import OmegaConf
 from tqdm import tqdm
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+DIAGNOSTIC_PROBES_DIR = PROJECT_ROOT / "DiagnosticProbes"
+
 if str(PROJECT_ROOT) not in sys.path:
-    sys.path.append(str(PROJECT_ROOT))
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 # Optimize CUDA kernel selection for fixed image shapes
 if torch.cuda.is_available():
     torch.backends.cudnn.benchmark = True
 
-from dota import get_dota_dataloaders
 from util import instantiate_from_config
+from DiagnosticProbes.scripts.dota import get_dota_dataloaders
 
 
 def load_model_from_config(exp_dir, config_path, ckpt_path, device):
@@ -136,7 +138,6 @@ def cache_features(model, dataloader, device, save_dir, split_name, checkpoint_i
             for name in target_blocks.keys():
                 features = activation[name]
 
-                # Capture only the last frame's latent (Skip pooling)
                 if features.dim() == 4:
                     features = features[:, -1, :, :]
                 
@@ -153,7 +154,6 @@ def cache_features(model, dataloader, device, save_dir, split_name, checkpoint_i
             if isinstance(target_frame_ids, (list, tuple)):
                 all_target_frame_ids.extend(target_frame_ids)
 
-            # Clear hook activation dict and release MPS GPU memory
             activation.clear()
             if device.type == "mps":
                 torch.mps.empty_cache()
@@ -197,7 +197,6 @@ def cache_features(model, dataloader, device, save_dir, split_name, checkpoint_i
                 if temp_ego_labels is not None:
                     del temp_ego_labels
 
-    # Clean up all hooks
     for handle in hook_handles:
         handle.remove()
     
@@ -242,7 +241,7 @@ def parse_args():
     parser.add_argument("--anno_dir", type=str, default="annotations/")
     parser.add_argument("--batch_size", type=int, default=8, help="Batch size optimized for NVIDIA T4 GPU")
     parser.add_argument("--num_workers", type=int, default=6, help="Optimal CPU worker threads for n1-standard-8 (8 vCPUs).")
-    parser.add_argument("--save_dir", type=str, default="./results")
+    parser.add_argument("--save_dir", type=str, default="DiagnosticProbes/cached_features")
     parser.add_argument("--checkpoint_interval", type=int, default=100, help="Backup cache every N sequences")
     parser.add_argument("--max_samples", type=int, default=3000, help="Cap dataset to this many clips before 80/20 train/val split.")
     parser.add_argument("--cloud_dir", type=str, default="DOTA_training")
@@ -280,7 +279,6 @@ if __name__ == "__main__":
 
     model = load_model_from_config(args.exp_dir, args.config, args.ckpt, device)
 
-    # Note: We now pass save_dir and split_name separately
     cache_features(
         model, 
         train_loader, 

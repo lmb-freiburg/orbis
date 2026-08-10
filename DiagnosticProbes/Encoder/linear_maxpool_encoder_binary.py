@@ -11,9 +11,22 @@ from torch.utils.data import Dataset, DataLoader
 from sklearn.metrics import accuracy_score, precision_score, recall_score, roc_auc_score, confusion_matrix
 import wandb
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+PROBE_DIR = Path(__file__).resolve().parent
+DIAGNOSTIC_PROBES_DIR = PROBE_DIR.parent
+PROJECT_ROOT = DIAGNOSTIC_PROBES_DIR.parent
+
 if str(PROJECT_ROOT) not in sys.path:
-    sys.path.append(str(PROJECT_ROOT))
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+def resolve_path(p):
+    if p is None: return None
+    if os.path.isabs(p): return p
+    p1 = os.path.join(DIAGNOSTIC_PROBES_DIR, p)
+    if os.path.exists(p1): return p1
+    p2 = os.path.join(PROJECT_ROOT, p)
+    if os.path.exists(p2): return p2
+    if os.path.exists(p): return os.path.abspath(p)
+    return p1
 
 import random
 import numpy as np
@@ -30,10 +43,11 @@ set_seed(43)
 
 class CachedFeatureDataset(Dataset):
     def __init__(self, cache_path):
-        if not os.path.exists(cache_path):
+        resolved_cache_path = resolve_path(cache_path)
+        if not resolved_cache_path or not os.path.exists(resolved_cache_path):
             raise FileNotFoundError(f"Target embedding cache not found at: {cache_path}")
             
-        data = torch.load(cache_path, map_location="cpu")
+        data = torch.load(resolved_cache_path, map_location="cpu")
         features = data['features']           # Raw Cache Shape: [Batch, C, H, W]
         self.labels = data['labels'].long() 
         self.ids = data.get('ids', data.get('video_ids', []))

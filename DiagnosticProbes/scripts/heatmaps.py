@@ -14,48 +14,29 @@ import sys
 from pathlib import Path
 from omegaconf import OmegaConf
 
-PROBE_DIR = os.path.dirname(os.path.abspath(__file__))
-PROJECT_ROOT = os.path.dirname(PROBE_DIR)
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+DIAGNOSTIC_PROBES_DIR = PROJECT_ROOT / "DiagnosticProbes"
 
-for path_to_add in [PROJECT_ROOT, PROBE_DIR]:
-    if path_to_add not in sys.path:
-        sys.path.insert(0, path_to_add)
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 def resolve_path(p):
     if p is None:
         return None
-    if os.path.isabs(p):
-        return p
-    p1 = os.path.join(PROJECT_ROOT, p)
-    if os.path.exists(p1):
-        return p1
-    p2 = os.path.join(PROBE_DIR, p)
-    if os.path.exists(p2):
-        return p2
-    return p1
+    p_path = Path(p)
+    if p_path.is_absolute():
+        return str(p_path)
+    p1 = PROJECT_ROOT / p
+    if p1.exists():
+        return str(p1)
+    p2 = DIAGNOSTIC_PROBES_DIR / p
+    if p2.exists():
+        return str(p2)
+    return str(p1)
 
 from util import instantiate_from_config
-from linear_attention_probe_binary import AttentionProbe
-
-try:
-    from dota import DOTA_CLASS_NAMES
-except ImportError:
-    try:
-        from LinearProbe.dota import DOTA_CLASS_NAMES
-    except ImportError:
-        DOTA_CLASS_NAMES = {
-            0: "normal",
-            1: "start_stop_or_stationary",
-            2: "moving_ahead_or_waiting",
-            3: "lateral",
-            4: "oncoming",
-            5: "turning",
-            6: "pedestrian",
-            7: "obstacle",
-            8: "leave_to_right",
-            9: "leave_to_left",
-            10: "unknown",
-        }
+from DiagnosticProbes.Activations.linear_attention_probe_binary import AttentionProbe
+from DiagnosticProbes.scripts.dota import DOTA_CLASS_NAMES
 
 def process_attention_map(attn_1d, img_bgr, W, H):
     """Helper function to normalize, resize, and overlay a single attention tensor."""

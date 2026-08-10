@@ -1,4 +1,5 @@
 import os
+import sys
 import argparse
 import torch
 import torch.nn as nn
@@ -9,6 +10,29 @@ from sklearn.metrics import accuracy_score, precision_score, recall_score, roc_a
 import wandb # Added Weights & Biases
 import random
 import numpy as np
+
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+DIAGNOSTIC_PROBES_DIR = PROJECT_ROOT / "DiagnosticProbes"
+
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+def resolve_path(p):
+    if p is None:
+        return None
+    if os.path.isabs(p):
+        return p
+    p1 = os.path.join(DIAGNOSTIC_PROBES_DIR, p)
+    if os.path.exists(p1):
+        return p1
+    p2 = os.path.join(PROJECT_ROOT, p)
+    if os.path.exists(p2):
+        return p2
+    if os.path.exists(p):
+        return os.path.abspath(p)
+    return p1
 
 def set_seed(seed=43):
     random.seed(seed)
@@ -21,7 +45,8 @@ set_seed(43)
 
 class CachedFeatureDataset(Dataset):
     def __init__(self, cache_path):
-        data = torch.load(cache_path, map_location='cpu')
+        resolved_cache_path = resolve_path(cache_path)
+        data = torch.load(resolved_cache_path, map_location='cpu')
         self.features = data['features'].half() if data['features'].dtype == torch.float32 else data['features']
         self.labels = data['labels'].long() 
         self.mc_labels = data['mc_labels'] if 'mc_labels' in data else None
@@ -29,7 +54,7 @@ class CachedFeatureDataset(Dataset):
         self.ego_labels = data['ego_labels'] if 'ego_labels' in data else None
         self.video_ids = data['video_ids']
         self.target_frame_ids = data['target_frame_ids'] if 'target_frame_ids' in data else [None] * len(self.video_ids)
-        print(f'Loaded {cache_path} | Shape - {self.features.shape} , {self.labels.shape}')
+        print(f'Loaded {resolved_cache_path} | Shape - {self.features.shape} , {self.labels.shape}')
         
     def __len__(self):
         return len(self.features)

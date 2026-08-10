@@ -5,27 +5,31 @@ import torch.optim as optim
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 from sklearn.metrics import accuracy_score, precision_score, recall_score, roc_auc_score, confusion_matrix
-import wandb # Added Weights & Biases
+import wandb
+import sys
+from pathlib import Path
 
-try:
-    from dota import DOTA_CLASS_NAMES
-except ImportError:
-    try:
-        from LinearProbe.dota import DOTA_CLASS_NAMES
-    except ImportError:
-        DOTA_CLASS_NAMES = {
-            0: "normal",
-            1: "start_stop_or_stationary",
-            2: "moving_ahead_or_waiting",
-            3: "lateral",
-            4: "oncoming",
-            5: "turning",
-            6: "pedestrian",
-            7: "obstacle",
-            8: "leave_to_right",
-            9: "leave_to_left",
-            10: "unknown",
-        }
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+DIAGNOSTIC_PROBES_DIR = PROJECT_ROOT / "DiagnosticProbes"
+
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+def resolve_path(p):
+    if p is None:
+        return None
+    p_path = Path(p)
+    if p_path.is_absolute():
+        return str(p_path)
+    p1 = DIAGNOSTIC_PROBES_DIR / p
+    if p1.exists():
+        return str(p1)
+    p2 = PROJECT_ROOT / p
+    if p2.exists():
+        return str(p2)
+    return str(p1)
+
+from DiagnosticProbes.scripts.dota import DOTA_CLASS_NAMES
 
 import random
 import numpy as np
@@ -41,7 +45,8 @@ set_seed(43)
 
 class CachedFeatureDataset(Dataset):
     def __init__(self, cache_path):
-        data = torch.load(cache_path, map_location='cpu')
+        resolved_cache_path = resolve_path(cache_path)
+        data = torch.load(resolved_cache_path, map_location='cpu')
         self.features = data['features'].half() if data['features'].dtype == torch.float32 else data['features']
         self.labels = data['labels'].long() 
         self.mc_labels = data['mc_labels'] if 'mc_labels' in data else None
@@ -49,7 +54,7 @@ class CachedFeatureDataset(Dataset):
         self.ego_labels = data['ego_labels'] if 'ego_labels' in data else None
         self.video_ids = data['video_ids']
         self.target_frame_ids = data['target_frame_ids'] if 'target_frame_ids' in data else [None] * len(self.video_ids)
-        print(f'Loaded {cache_path} | Shape - {self.features.shape} , {self.labels.shape}')
+        print(f'Loaded {resolved_cache_path} | Shape - {self.features.shape} , {self.labels.shape}')
         
     def __len__(self):
         return len(self.features)

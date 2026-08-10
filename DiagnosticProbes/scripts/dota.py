@@ -9,7 +9,14 @@ from torchvision import transforms
 from PIL import Image
 from collections import Counter
 from tqdm import tqdm
+import sys
 from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+DIAGNOSTIC_PROBES_DIR = PROJECT_ROOT / "DiagnosticProbes"
+
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 DOTA_CLASS_NAMES = {
     0: "normal",
@@ -464,10 +471,19 @@ def get_dota_dataloaders(
 
 
 if __name__ == "__main__":
-    # SEQ_DIR = Path("/Volumes/maccbeast/frames/")
-    # ANNO_DIR = Path("annotations")
-    SEQ_DIR = Path("../DOTA_sequences")
-    ANNO_DIR = Path("../DOTA_annotations")
+    candidate_seqs = [
+        PROJECT_ROOT.parent / "DOTA_sequences",
+        DIAGNOSTIC_PROBES_DIR / "DoTA_sequences",
+        Path("DoTA_sequences"),
+    ]
+    candidate_annos = [
+        PROJECT_ROOT.parent / "DOTA_annotations",
+        PROJECT_ROOT / "DOTA_annotations",
+        Path("DOTA_annotations"),
+    ]
+
+    SEQ_DIR = next((p for p in candidate_seqs if p.exists()), candidate_seqs[0])
+    ANNO_DIR = next((p for p in candidate_annos if p.exists()), candidate_annos[0])
     
     # Global Parameters
     TARGET_FRAMES = 6 

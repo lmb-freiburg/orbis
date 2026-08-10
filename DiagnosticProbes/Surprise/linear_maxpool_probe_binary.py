@@ -9,25 +9,51 @@ from torch.utils.data import Dataset, DataLoader
 from sklearn.metrics import accuracy_score, precision_score, recall_score, roc_auc_score, confusion_matrix
 import wandb
 
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+DIAGNOSTIC_PROBES_DIR = PROJECT_ROOT / "DiagnosticProbes"
+
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+def resolve_path(p):
+    if p is None:
+        return None
+    if os.path.isabs(p):
+        return p
+    p1 = os.path.join(DIAGNOSTIC_PROBES_DIR, p)
+    if os.path.exists(p1):
+        return p1
+    p2 = os.path.join(PROJECT_ROOT, p)
+    if os.path.exists(p2):
+        return p2
+    if os.path.exists(p):
+        return os.path.abspath(p)
+    return p1
+
 try:
     from dota import DOTA_CLASS_NAMES
 except ImportError:
     try:
-        from LinearProbe.dota import DOTA_CLASS_NAMES
+        from DiagnosticProbes.scripts.dota import DOTA_CLASS_NAMES
     except ImportError:
-        DOTA_CLASS_NAMES = {
-            0: "normal",
-            1: "start_stop_or_stationary",
-            2: "moving_ahead_or_waiting",
-            3: "lateral",
-            4: "oncoming",
-            5: "turning",
-            6: "pedestrian",
-            7: "obstacle",
-            8: "leave_to_right",
-            9: "leave_to_left",
-            10: "unknown",
-        }
+        try:
+            from LinearProbe.dota import DOTA_CLASS_NAMES
+        except ImportError:
+            DOTA_CLASS_NAMES = {
+                0: "normal",
+                1: "start_stop_or_stationary",
+                2: "moving_ahead_or_waiting",
+                3: "lateral",
+                4: "oncoming",
+                5: "turning",
+                6: "pedestrian",
+                7: "obstacle",
+                8: "leave_to_right",
+                9: "leave_to_left",
+                10: "unknown",
+            }
 
 DOTA_NAME_TO_ID = {v: k for k, v in DOTA_CLASS_NAMES.items()}
 
@@ -44,14 +70,16 @@ def set_seed(seed=43):
 set_seed(43)
 
 class CachedSurpriseDataset(Dataset):
-    def __init__(self, cache_path="./cached_features/cached_normalized_surprise_scores.pt", split='train', map_type='combined'):
-        if not os.path.exists(cache_path):
-            for alt in ["../cached_features/cached_normalized_surprise_scores.pt"]:
-                if os.path.exists(alt):
-                    cache_path = alt
+    def __init__(self, cache_path="./cached_features/cached_normalized_surprise_scores_3000.pt", split='train', map_type='combined'):
+        resolved_cache_path = resolve_path(cache_path)
+        if not resolved_cache_path or not os.path.exists(resolved_cache_path):
+            for alt in ["cached_features/cached_normalized_surprise_scores_3000.pt", "cached_features/cached_normalized_surprise_scores.pt", "results/sample_scores.pt"]:
+                alt_res = resolve_path(alt)
+                if alt_res and os.path.exists(alt_res):
+                    resolved_cache_path = alt_res
                     break
 
-        data = torch.load(cache_path, map_location='cpu')
+        data = torch.load(resolved_cache_path, map_location='cpu')
         split_items = [d for d in data if d.get('split') == split]
         
         feats_list = []
@@ -61,12 +89,21 @@ class CachedSurpriseDataset(Dataset):
         video_ids_list = []
         target_frame_ids_list = []
 
+        half = 16
+
         for item in split_items:
-            hm = item['head_maps'][map_type]
+            # Always load 'combined' as it contains both semantic (first 16 channels) and detailed (last 16 channels)
+            hm = item['head_maps']['combined']
             if not isinstance(hm, torch.Tensor):
                 hm = torch.tensor(hm)
 
-            # hm shape: [T=4, C, H=18, W=32]
+            # hm shape: [T=4, C=32, H=18, W=32]
+            # Semantic is 2nd half and 1st is Detailed
+            if map_type == 'semantic':
+                hm = hm[:, half:, :, :]
+            elif map_type == 'detailed':
+                hm = hm[:, :half, :, :]
+
             # Mean across time dimension T=4 (dim=0): [C, 18, 32]
             mean_hm = hm.float().mean(dim=0)
             # Permute to [18, 32, C] -> Reshape to [576 spatial tokens, C channels]
@@ -170,8 +207,8 @@ def run_experiment_for_head(map_type='combined', use_sweep=True):
         print(f"   Training MaxPool Probe for Head Map: '{map_type}'")
         print(f"=======================================================")
 
-        train_dataset = CachedSurpriseDataset("./cached_features/cached_normalized_surprise_scores.pt", split='train', map_type=map_type)
-        val_dataset = CachedSurpriseDataset("./cached_features/cached_normalized_surprise_scores.pt", split='val', map_type=map_type)
+        train_dataset = CachedSurpriseDataset("./cached_features/cached_normalized_surprise_scores_3000.pt", split='train', map_type=map_type)
+        val_dataset = CachedSurpriseDataset("./cached_features/cached_normalized_surprise_scores_3000.pt", split='val', map_type=map_type)
 
         train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
         val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)

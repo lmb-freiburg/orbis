@@ -10,49 +10,30 @@ import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score
 
-# Set directory structure
-SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
-DIAGNOSTIC_PROBES_DIR = os.path.dirname(SCRIPTS_DIR)
-PROJECT_ROOT = os.path.dirname(DIAGNOSTIC_PROBES_DIR)
+from pathlib import Path
 
-for path_to_add in [PROJECT_ROOT, DIAGNOSTIC_PROBES_DIR]:
-    if path_to_add not in sys.path:
-        sys.path.insert(0, path_to_add)
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+DIAGNOSTIC_PROBES_DIR = PROJECT_ROOT / "DiagnosticProbes"
+
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 def resolve_path(p):
     if p is None:
         return None
-    if os.path.isabs(p):
-        return p
-    p1 = os.path.join(PROJECT_ROOT, p)
-    if os.path.exists(p1):
-        return p1
-    p2 = os.path.join(DIAGNOSTIC_PROBES_DIR, p)
-    if os.path.exists(p2):
-        return p2
-    return p1
+    p_path = Path(p)
+    if p_path.is_absolute():
+        return str(p_path)
+    p1 = PROJECT_ROOT / p
+    if p1.exists():
+        return str(p1)
+    p2 = DIAGNOSTIC_PROBES_DIR / p
+    if p2.exists():
+        return str(p2)
+    return str(p1)
 
-try:
-    from dota import DOTA_CLASS_NAMES
-except ImportError:
-    try:
-        from DiagnosticProbes.dota import DOTA_CLASS_NAMES
-    except ImportError:
-        try:
-            from LinearProbe.dota import DOTA_CLASS_NAMES
-        except ImportError:
-            DOTA_CLASS_NAMES = {
-                0: "normal",
-                1: "start_stop_or_stationary",
-                2: "moving_ahead_or_waiting",
-                3: "lateral",
-                4: "oncoming",
-                5: "turning",
-                6: "pedestrian",
-                7: "obstacle",
-                8: "leave_to_right",
-                10: "unknown",
-            }
+from DiagnosticProbes.scripts.dota import DOTA_CLASS_NAMES
+from DiagnosticProbes.Activations.linear_attention_probe_binary import AttentionProbe
 DOTA_NAME_TO_ID = {v: k for k, v in DOTA_CLASS_NAMES.items()}
 
 
@@ -635,14 +616,10 @@ def generate_stats(
 
     print(f"\nSaved detailed per-source-class performance report with color-coded matrices to '{output_path}'")
 
-    # Generate Heatmaps
     try:
-        from heatmaps import generate_attention_heatmaps_binary
-    except ImportError:
-        try:
-            from DiagnosticProbes.heatmaps import generate_attention_heatmaps_binary
-        except ImportError:
-            from LinearProbe.heatmaps import generate_attention_heatmaps_binary
+        from DiagnosticProbes.scripts.heatmaps import generate_attention_heatmaps_binary
+    except Exception as e:
+        print(f"Notice: Could not import heatmap generator: {e}")
 
     try:
         generate_attention_heatmaps_binary(
