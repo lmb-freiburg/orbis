@@ -127,7 +127,7 @@ if __name__ == "__main__":
         min_required_frames = 1 + stride * (required_context_count - 1)
         
         if len(all_frames) < min_required_frames:
-            print(f"⚠️ Skipping Sequence {seq_id}: Found only {len(all_frames)} frames (minimum {min_required_frames} required for 5 FPS downsampling).")
+            print(f"Skipping Sequence {seq_id}: Found only {len(all_frames)} frames (minimum {min_required_frames} required for 5 FPS downsampling).")
             continue
             
         # Sample 5 frames backwards starting from the last frame, then reverse back to chronological order
@@ -136,7 +136,7 @@ if __name__ == "__main__":
         
         # 2. Print the titles/filenames of the 5 input context frames along with the current sequence ID
         print(f"\n" + "="*60)
-        print(f"🚀 Processing Sequence ID: {seq_id}")
+        print(f"Processing Sequence ID: {seq_id}")
         print("Using downsampled context frames (5 FPS from end):")
         for frame in sampled_context_frames:
             print(f"  - {os.path.basename(frame)}")

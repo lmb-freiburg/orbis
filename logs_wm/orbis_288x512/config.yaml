@@ -1,4 +1,4 @@
-yamlmodel:
+model:
   base_learning_rate: 5.0e-05
   adjust_learning_rate: false
   find_unused_parameters: true

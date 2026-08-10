@@ -90,7 +90,7 @@ def run_orbis_test_pipeline(
 if __name__ == "__main__":
     random.seed(42) # Ensure reproducible random selection across runs
     
-    # 1. Parse num_gen_frames and num_steps directly from the command line interface
+    # Parse num_gen_frames and num_steps directly from the command line interface
     parser = argparse.ArgumentParser(description="Batch Orbis testing pipeline wrapper.")
     parser.add_argument("--num_gen_frames", type=int, required=True, help="Number of frames to generate during rollout.")
     parser.add_argument("--num_steps", type=int, required=True, help="Number of sampling evaluation steps.")
@@ -114,9 +114,9 @@ if __name__ == "__main__":
     if len(sequence_dirs) > NUM_SAMPLES:
         sequence_dirs = random.sample(sequence_dirs, NUM_SAMPLES)
         sequence_dirs = sorted(sequence_dirs) 
-        print(f"🎲 Randomly selected {NUM_SAMPLES} sequences for evaluation.")
+        print(f"Randomly selected {NUM_SAMPLES} sequences for evaluation.")
     else:
-        print(f"⚠️ Dataset has fewer than {NUM_SAMPLES} sequences. Processing all available folders.")
+        print(f"Dataset has fewer than {NUM_SAMPLES} sequences. Processing all available folders.")
 
     for seq_path in sequence_dirs:
         folder_name = os.path.basename(seq_path)
@@ -129,13 +129,13 @@ if __name__ == "__main__":
             
         all_frames = sorted(all_frames)
         
-        # --- SAMPLING LOGIC FOR DOTA (10 Hz -> 5 Hz from 50% mark) ---
+        # SAMPLING LOGIC FOR DOTA (10 Hz -> 5 Hz from 50% mark)
         stride = 2
         required_context_count = 5
         required_span = (required_context_count - 1) * stride + 1
         
         if len(all_frames) < required_span:
-            print(f"⚠️ Skipping Sequence {seq_id}: Found only {len(all_frames)} frames (minimum {required_span} required for DoTA 5 Hz rollout).")
+            print(f"Skipping Sequence {seq_id}: Found only {len(all_frames)} frames (minimum {required_span} required for DoTA 5 Hz rollout).")
             continue
             
         # Locate the 50% midpoint index of the video
@@ -147,23 +147,20 @@ if __name__ == "__main__":
             
         # Collect 5 frames, stepping by 2, starting from our calculated start position
         sampled_context_frames = [all_frames[start_idx + (i * stride)] for i in range(required_context_count)]
-        # ---------------------------------------------------------------------
         
         print(f"\n" + "="*60)
-        print(f"🚀 Processing Sequence ID: {seq_id}")
+        print(f"Processing Sequence ID: {seq_id}")
         print("Using downsampled context frames (5 FPS from 50% Midpoint):")
         for frame in sampled_context_frames:
             print(f"  - {os.path.basename(frame)}")
         print("="*60)
         
-        # --- NEW: Save input context frames for reference ---
         seq_input_frames_dir = os.path.join(PIPELINE_GIF_STORE, "input_frames", seq_id)
         os.makedirs(seq_input_frames_dir, exist_ok=True)
         for frame_path in sampled_context_frames:
             dest_frame_path = os.path.join(seq_input_frames_dir, os.path.basename(frame_path))
             shutil.copy2(frame_path, dest_frame_path)
         print(f" Cached {len(sampled_context_frames)} source frames inside: {seq_input_frames_dir}")
-        # -----------------------------------------------------
         
         custom_pipeline_overrides = {
             "model.params.generator_config.params.max_num_frames": required_context_count,
