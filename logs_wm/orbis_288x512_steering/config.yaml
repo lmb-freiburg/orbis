@@ -1,0 +1,72 @@
+model:
+  find_unused_parameters: true
+  base_learning_rate: 5.0e-05
+  adjust_learning_rate: false
+  warmup_steps: 0
+  min_lr_multiplier: 0.1
+  precision: 16-mixed
+  grad_clip: 1.0
+  gradient_clip_algorithm: norm
+  grad_acc_steps: 3
+  target: models.second_stage.fm_model_steering.ModelIFGoalPointCond
+  params:
+    # use_precomputed_training_inputs: false
+    steering_drop:
+    - 0.0
+    - 0.0
+    num_pred_frames: 1
+    num_context_frames: 5
+    goal_distance_frames: 5
+    enc_scale: 4
+    enc_scale_dino: 4
+    adjust_lr_to_batch_size: false
+    tokenizer_config:
+      folder: $TK_WORK_DIR/tokenizer_288x512
+      ckpt_path: checkpoints/tokenizer_288x512.ckpt
+    generator_config:
+      target: networks.DiT.dit_steering.SwinSTDiTSteeringSimpleCond
+      params:
+        steering_config:
+          target: networks.DiT.dit_steering.SplitSteeringSpeedYawEmbedder
+          params:
+            hidden_size: 768
+        modulate_time_attn: true
+        window_size:
+        - 6
+        - 4
+        causal_time_attn: true
+        max_num_frames: 6
+        hidden_size: 768
+        depth: 24
+        num_heads: 16
+        mlp_ratio: 4
+        input_size:
+        - 18
+        - 32
+        patch_size: 1
+        in_channels: 32
+        dropout: 0.0
+        ctx_noise_aug_ratio: 0.1
+        ctx_noise_aug_prob: 0.5
+        drop_ctx_rate: 0.5
+        qk_norm: true
+
+data:
+  target: data.datamodule.DataModuleFromConfig
+  params:
+    batch_size: 1
+    num_workers: 4
+    validation:
+      target: data.multiframe_val.MultiFrameFromPathsSteering
+      params:
+        # This steering model needs num_context_frames + goal_distance_frames (+ num_gen_frames)
+        # images (11 by default) -- the 5 files below are only a placeholder, replace with
+        # your own sequence of at least that many frames.
+        image_paths:
+        - imgs/example/frame_0000.jpg
+        - imgs/example/frame_0001.jpg
+        - imgs/example/frame_0002.jpg
+        - imgs/example/frame_0003.jpg
+        - imgs/example/frame_0004.jpg
+        size: [288, 512]
+        frame_rate: 5

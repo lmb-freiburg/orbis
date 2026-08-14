@@ -79,6 +79,34 @@ class MultiFrameFromPaths(MultiFrameValidationDataset):
         self.frame_paths = [self.image_paths]
 
 
+class MultiFrameFromPathsSteering(MultiFrameFromPaths):
+    """
+    Loads a frame sequence from image paths, paired with a NaN placeholder steering
+    signal. Intended for use with evaluate/rollout_steering.py's --steering flag,
+    which overwrites the placeholder with real (speed, yaw_rate) values loaded from
+    a .npy/.csv file (see apply_steering()).
+
+    `image_paths` only needs to cover the frames actually used as visual context
+    (ModelIFGoalPointCond.roll_out only reads the first num_context_frames images) --
+    the larger `num_frames` that evaluate/rollout_steering.py requests (context +
+    goal_distance + num_gen_frames) sizes the steering placeholder only, and does not
+    require that many real image files.
+    """
+    def __init__(self, *, size, image_paths, frame_rate, num_frames=None):
+        super().__init__(size=size, image_paths=image_paths, num_frames=None)
+        self.frame_rate = frame_rate
+        self.steering_num_frames = num_frames or len(image_paths)
+
+    def __getitem__(self, index):
+        images = super().__getitem__(index)
+        steering = torch.full((self.steering_num_frames, 2), float('nan'), dtype=torch.float32)
+        return {
+            'images': images,
+            'steering': steering,
+            'frame_rate': torch.tensor(self.frame_rate).float(),
+        }
+
+
 class JSONFramesListLoader(MultiFrameValidationDataset):
     """
     A dataset for loading frame sequences from a JSON file, as used in the Vista codebase.
