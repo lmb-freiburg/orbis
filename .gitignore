@@ -1,0 +1,66 @@
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+.conda/
+conda-env/
+.python-version
+
+# Jupyter / notebooks
+.ipynb_checkpoints/
+
+# PyTorch / training artifacts
+*.ckpt
+*.pt
+*.pth
+*.jpg
+*.bin
+*.safetensors
+*.onnx
+
+# Temporary / generated files
+*.tmp
+*.temp
+*.log
+*.out
+*.pid
+*.swp
+*.swo
+.DS_Store
+*.gif
+
+# IDE / editor files
+.vscode/
+.idea/
+
+# OS-specific
+Thumbs.db
+
+
+#DoTASpecific
+DOTA*
+
+#DiagnosticProbes
+DiagnosticProbes/checkpoints/
+DiagnosticProbes/cached_features/
+DiagnosticProbes/comparisonPlots/
+DiagnosticProbes/confusionMatrices*
+DiagnosticProbes/results/
+DiagnosticProbes/
+DiagnosticProbes/*.pt
+DiagnosticProbes/*.png
+DiagnosticProbes/*.gif
+*.png
+*.txt
+*.npy
+*.pt
+*wandb*
+
+
+

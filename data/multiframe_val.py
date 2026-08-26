@@ -215,5 +215,3 @@ class JSONFramesListLoaderSteering(JSONFramesListLoader):
             'frame_rate': torch.tensor(self.frame_rate).float(),
         }
 
-
-    
